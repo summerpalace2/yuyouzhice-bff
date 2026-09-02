@@ -33,7 +33,6 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
-const APP_DIR = path.join(ROOT, 'app');
 const PORT = Number(process.env.PORT || 3000);
 const BFF_LOG_FILE = process.env.YUYOUZHICE_LOG_FILE || path.join(ROOT, 'logs', 'bff-runtime.log');
 // Canonical Web BFF session TTL; TOKEN_TTL_MS remains a compatibility alias.
@@ -2475,21 +2474,14 @@ const MIME = {
 };
 
 async function staticFile(req, res, pathname) {
-  const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '');
+  const relative = pathname.replace(/^\//, '');
 
-  let full;
-  if (relative.startsWith('data/') || relative.startsWith('data\\')) {
-    // User data includes credentials and account-owned history; it is never a
-    // public static asset, even when the file exists under the project root.
+  // BFF is intentionally API-first. Only shared attraction images are public;
+  // the Vue app owns pages, bundles and its deployment platform's SPA routing.
+  if (!relative.startsWith('images/') && !relative.startsWith('images\\')) {
     return json(res, 404, { ok: false, message: '页面或资源不存在。' });
   }
-  if (relative.startsWith('outputs/') || relative.startsWith('outputs\\')) {
-    full = path.resolve(ROOT, relative);
-  } else if (relative.startsWith('images/') || relative.startsWith('images\\')) {
-    full = path.resolve(ROOT, relative);
-  } else {
-    full = path.resolve(APP_DIR, relative);
-  }
+  const full = path.resolve(ROOT, relative);
 
   // 安全检查：文件必须在项目根目录下且存在
   if (!full.startsWith(ROOT) || !existsSync(full)) {
@@ -2536,6 +2528,14 @@ export function createAppServer({ port = PORT } = {}) {
     res.once('close', onResponseClose);
     try {
       if (url.pathname.startsWith('/api/')) return await api(req, res, url, requestController.signal);
+      if (url.pathname === '/') {
+        return json(res, 200, {
+          ok: true,
+          service: '渝游智策 BFF',
+          message: '服务运行正常。前端由独立 Web 应用托管，请通过 /api/* 访问业务接口。',
+          health: '/api/health'
+        });
+      }
       return await staticFile(req, res, url.pathname);
     } catch (error) {
       if (error?.code === 'REQUEST_ABORTED' || req.aborted || res.destroyed) return;

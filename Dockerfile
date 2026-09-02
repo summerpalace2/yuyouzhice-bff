@@ -5,7 +5,6 @@ WORKDIR /app
 # The BFF uses only Node.js built-ins, so no package installation is needed at
 # image-build time. Keeping the runtime image explicit avoids auto-builder hangs.
 COPY package.json ./
-COPY app ./app
 COPY server ./server
 COPY images ./images
 
