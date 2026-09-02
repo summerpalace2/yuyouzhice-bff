@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+data/
+logs/
+*.log
+.idea/
+.adg/
+work/
+
+# Vue 前端已维护在独立仓库；BFF 仓库不再重复提交它的构建产物或源码。
+frontend/

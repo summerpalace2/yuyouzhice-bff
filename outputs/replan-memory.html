@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+
+<html class="light" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>重庆旅行指南 - Local Replan</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600;700&amp;family=Noto+Serif:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary-fixed": "#e7e2d5",
+                        "on-surface": "#1c1b1b",
+                        "on-tertiary-fixed": "#1d1c14",
+                        "primary-fixed": "#ffdad7",
+                        "surface-dim": "#dcd9d9",
+                        "background": "#fcf9f8",
+                        "secondary-fixed-dim": "#cac6bb",
+                        "surface-container-highest": "#e5e2e1",
+                        "inverse-surface": "#313030",
+                        "on-primary": "#ffffff",
+                        "surface-container-lowest": "#ffffff",
+                        "secondary": "#605e55",
+                        "surface-tint": "#ad302f",
+                        "on-error-container": "#93000a",
+                        "on-secondary-container": "#66645b",
+                        "on-primary-fixed": "#410004",
+                        "error": "#ba1a1a",
+                        "primary-fixed-dim": "#ffb3ad",
+                        "on-tertiary": "#ffffff",
+                        "surface-container-low": "#f6f3f2",
+                        "on-tertiary-fixed-variant": "#49473d",
+                        "on-primary-fixed-variant": "#8c171b",
+                        "on-primary-container": "#ffc0bb",
+                        "surface-container": "#f0eded",
+                        "tertiary-fixed-dim": "#cac6ba",
+                        "surface-variant": "#e5e2e1",
+                        "inverse-primary": "#ffb3ad",
+                        "on-tertiary-container": "#d4d0c3",
+                        "primary-container": "#a52a2a",
+                        "secondary-container": "#e6e2d6",
+                        "outline": "#8c716e",
+                        "on-secondary-fixed": "#1d1c15",
+                        "surface-bright": "#fcf9f8",
+                        "primary": "#840f16",
+                        "on-secondary": "#ffffff",
+                        "inverse-on-surface": "#f3f0ef",
+                        "tertiary": "#434238",
+                        "on-surface-variant": "#58413f",
+                        "on-background": "#1c1b1b",
+                        "tertiary-container": "#5b594f",
+                        "secondary-fixed": "#e6e2d6",
+                        "outline-variant": "#e0bfbc",
+                        "on-secondary-fixed-variant": "#48473e",
+                        "on-error": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "surface-container-high": "#eae7e7",
+                        "surface": "#fcf9f8"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "container-max": "1200px",
+                        "margin-mobile": "20px",
+                        "gutter": "32px",
+                        "unit": "8px",
+                        "asymmetric-offset": "64px"
+                    },
+                    "fontFamily": {
+                        "label-caps": ["Hanken Grotesk"],
+                        "display-lg": ["Noto Serif"],
+                        "body-lg": ["Hanken Grotesk"],
+                        "display-lg-mobile": ["Noto Serif"],
+                        "headline-md": ["Noto Serif"],
+                        "body-md": ["Hanken Grotesk"]
+                    },
+                    "fontSize": {
+                        "label-caps": ["12px", { "lineHeight": "1.0", "letterSpacing": "0.1em", "fontWeight": "700" }],
+                        "display-lg": ["48px", { "lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "body-lg": ["18px", { "lineHeight": "1.6", "fontWeight": "400" }],
+                        "display-lg-mobile": ["32px", { "lineHeight": "1.2", "fontWeight": "700" }],
+                        "headline-md": ["24px", { "lineHeight": "1.4", "fontWeight": "600" }],
+                        "body-md": ["16px", { "lineHeight": "1.6", "fontWeight": "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { background-color: #fcf9f8; color: #1c1b1b; }
+        .bg-parchment { background-color: #E8E4D8; }
+        .text-ink { color: #1c1b1b; }
+        .bg-ink { background-color: #1c1b1b; }
+        .text-ivory { color: #fcf9f8; }
+        .paper-shadow { box-shadow: 0 10px 40px rgba(26, 26, 26, 0.05); }
+        .divider-thin { border-bottom: 0.5px solid #D1CDC0; }
+        .blinking-cursor {
+            display: inline-block;
+            width: 2px;
+            height: 1.2em;
+            background-color: #840f16;
+            animation: blink 1s step-end infinite;
+            vertical-align: middle;
+        }
+        @keyframes blink { 50% { opacity: 0; } }
+    </style>
+</head>
+<body class="font-body-md text-body-md overflow-hidden relative w-screen h-screen">
+<!-- Background: Blurred Timeline/Workspace -->
+<div class="absolute inset-0 w-full h-full object-cover blur-md opacity-40 grayscale-[20%]" data-alt="A sophisticated digital travel planner interface blurred out in the background. It shows a timeline of a trip to Chongqing, China, with elegant serif typography, subtle warm ivory and beige colors, and a minimalist editorial layout. Small markers indicating locations like Jiefangbei and Hongya Cave are faintly visible. High-end, calm, light mode design." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuC_91uMv7OvuI12xQ7rUK5SZY7pj_8MTh9eY-1af9vcK-Rs91a5aXzy1QHw7E4BYhQRLoGyr4P9UIvZlWCc1qqquuxHX2qCQktZzDfnFXm-Hy5JGPuE5ZZ20B-2rnqBvfbH2bYGIbIfYckAoxPEDd4HVNTZyCIJrwdpcX1PU8gfA1G6dyYxGTPDRRoBvyB4oHTD0Ku_6kHEk9HmmKzk3g2M4bcfrIXc-rWWht9zZIAax5WBRQM57G4jfI4Q2iaoa-9hxVJSax73MifI')">
+</div>
+<!-- Main Container -->
+<div class="relative w-full h-full flex justify-end">
+<!-- Right-side Slide-over Panel -->
+<div class="w-full md:w-[480px] h-full bg-surface-container-lowest paper-shadow flex flex-col z-50 transform transition-transform duration-500 ease-in-out border-l border-outline-variant dark:border-on-surface-variant">
+<!-- Header -->
+<div class="px-gutter pt-12 pb-6 divider-thin flex justify-between items-start">
+<div>
+<h2 class="font-headline-md text-headline-md text-on-surface mb-2">替换这一站</h2>
+<p class="font-body-md text-body-md text-secondary">正在修改：洪崖洞</p>
+</div>
+<button class="text-secondary hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-[24px]">close</span>
+</button>
+</div>
+<!-- Content Area -->
+<div class="flex-1 overflow-y-auto px-gutter py-8">
+<!-- Strategy Text -->
+<p class="font-body-md text-body-md text-secondary italic mb-8 border-l-2 border-outline-variant pl-4 py-1">
+                    只调整当前站点，其他日期、Stop 和约束保持不变
+                </p>
+<!-- Reason Selection -->
+<div class="mb-10">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant mb-4">为什么想换？</h3>
+<div class="flex flex-wrap gap-3">
+<button class="bg-ink text-ivory px-4 py-2 rounded-full font-body-md text-body-md transition-colors">走路太多</button>
+<button class="bg-parchment text-ink hover:bg-surface-variant px-4 py-2 rounded-full font-body-md text-body-md transition-colors">太远</button>
+<button class="bg-parchment text-ink hover:bg-surface-variant px-4 py-2 rounded-full font-body-md text-body-md transition-colors">太贵</button>
+<button class="bg-parchment text-ink hover:bg-surface-variant px-4 py-2 rounded-full font-body-md text-body-md transition-colors">没兴趣</button>
+<button class="bg-parchment text-ink hover:bg-surface-variant px-4 py-2 rounded-full font-body-md text-body-md transition-colors">想换室内</button>
+<button class="bg-parchment text-ink hover:bg-surface-variant px-4 py-2 rounded-full font-body-md text-body-md transition-colors">其他</button>
+</div>
+</div>
+<!-- AI Recommendation Card -->
+<div class="bg-surface-container-low rounded-xl p-6 mb-10 border border-outline-variant relative">
+<div class="absolute top-6 right-6 flex items-center justify-center w-8 h-8 rounded-full bg-primary-fixed text-primary">
+<span class="material-symbols-outlined text-[18px]" style="font-variation-settings: 'FILL' 1;">auto_awesome</span>
+</div>
+<h4 class="font-headline-md text-headline-md text-on-surface mb-3 pr-10">重庆中国三峡博物馆</h4>
+<div class="flex gap-2 mb-6">
+<span class="bg-surface-container-high text-on-surface-variant px-2 py-1 rounded text-sm font-label-caps">室内</span>
+<span class="bg-surface-container-high text-on-surface-variant px-2 py-1 rounded text-sm font-label-caps">人文</span>
+<span class="bg-primary-container text-on-primary-container px-2 py-1 rounded text-sm font-label-caps">低步行</span>
+</div>
+<div class="mb-6 space-y-3">
+<div class="flex items-center gap-3 text-secondary">
+<span class="font-body-md text-body-md line-through">14:00 洪崖洞</span>
+<span class="material-symbols-outlined text-[16px]">arrow_forward</span>
+<span class="font-body-md text-body-md text-primary font-semibold">14:30 三峡博物馆</span>
+</div>
+<p class="font-body-md text-body-md text-secondary border-l border-outline-variant pl-3">
+                            保持不变：解放碑、李子坝、预算约束 <sup class="text-xs text-primary">[1][2]</sup>
+</p>
+</div>
+<div class="flex items-start gap-2 bg-error-container text-on-error-container p-3 rounded-lg">
+<span class="material-symbols-outlined text-[18px] mt-0.5">info</span>
+<p class="text-sm">DYNAMIC: 建议基于当前开放时间及实时流量 <span class="blinking-cursor"></span></p>
+</div>
+</div>
+<!-- Memory Proposal Card -->
+<div class="bg-surface-container rounded-lg p-6 flex flex-col gap-4 items-center text-center">
+<p class="font-body-md text-body-md text-on-surface">以后规划也优先少走路吗？</p>
+<div class="flex w-full gap-3">
+<button class="flex-1 bg-primary text-on-primary font-body-md text-body-md py-3 rounded-lg hover:bg-primary-container hover:text-on-primary-container transition-colors">
+                            记住
+                        </button>
+<button class="flex-1 border border-on-surface text-on-surface font-body-md text-body-md py-3 rounded-lg hover:bg-surface-variant transition-colors">
+                            仅本次
+                        </button>
+</div>
+</div>
+</div>
+<!-- Footer -->
+<div class="px-gutter py-4 divider-thin flex justify-between items-center text-secondary font-label-caps text-label-caps border-t border-outline-variant">
+<span>TripPlan v1 → v2</span>
+<span>仅 1 个 Stop 变化</span>
+</div>
+<div class="p-gutter">
+<button class="w-full bg-primary text-on-primary font-headline-md text-headline-md py-4 rounded-xl hover:bg-primary-container hover:text-on-primary-container transition-colors flex justify-center items-center gap-2">
+                    确认替换 <span class="material-symbols-outlined">check_circle</span>
+</button>
+</div>
+</div>
+</div>
+</body></html>

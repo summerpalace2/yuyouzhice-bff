@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>登录 - 重庆旅行指南</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;700&amp;family=Noto+Serif:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "surface-tint": "#ad302f",
+                      "on-secondary-fixed": "#1d1c15",
+                      "surface-container-low": "#f6f3f2",
+                      "tertiary": "#434238",
+                      "primary-fixed-dim": "#ffb3ad",
+                      "primary": "#840f16",
+                      "outline": "#8c716e",
+                      "on-error-container": "#93000a",
+                      "inverse-surface": "#313030",
+                      "on-error": "#ffffff",
+                      "error": "#ba1a1a",
+                      "on-surface": "#1c1b1b",
+                      "surface-container-high": "#eae7e7",
+                      "on-tertiary-fixed-variant": "#49473d",
+                      "on-tertiary-fixed": "#1d1c14",
+                      "background": "#fcf9f8",
+                      "inverse-on-surface": "#f3f0ef",
+                      "on-secondary-container": "#66645b",
+                      "on-background": "#1c1b1b",
+                      "surface-bright": "#fcf9f8",
+                      "on-primary-container": "#ffc0bb",
+                      "on-surface-variant": "#58413f",
+                      "on-primary-fixed-variant": "#8c171b",
+                      "error-container": "#ffdad6",
+                      "tertiary-fixed-dim": "#cac6ba",
+                      "surface-dim": "#dcd9d9",
+                      "surface-container": "#f0eded",
+                      "secondary-fixed-dim": "#cac6bb",
+                      "primary-fixed": "#ffdad7",
+                      "primary-container": "#a52a2a",
+                      "on-tertiary-container": "#d4d0c3",
+                      "surface-container-highest": "#e5e2e1",
+                      "surface": "#fcf9f8",
+                      "secondary-fixed": "#e6e2d6",
+                      "surface-container-lowest": "#ffffff",
+                      "on-tertiary": "#ffffff",
+                      "inverse-primary": "#ffb3ad",
+                      "on-primary-fixed": "#410004",
+                      "tertiary-container": "#5b594f",
+                      "secondary": "#605e55",
+                      "outline-variant": "#e0bfbc",
+                      "on-secondary-fixed-variant": "#48473e",
+                      "on-primary": "#ffffff",
+                      "tertiary-fixed": "#e7e2d5",
+                      "surface-variant": "#e5e2e1",
+                      "on-secondary": "#ffffff",
+                      "secondary-container": "#e6e2d6"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.125rem",
+                      "lg": "0.25rem",
+                      "xl": "0.5rem",
+                      "full": "0.75rem"
+              },
+              "spacing": {
+                      "margin-mobile": "20px",
+                      "gutter": "32px",
+                      "container-max": "1200px",
+                      "unit": "8px",
+                      "asymmetric-offset": "64px"
+              },
+              "fontFamily": {
+                      "label-caps": [
+                              "Hanken Grotesk"
+                      ],
+                      "display-lg": [
+                              "Noto Serif"
+                      ],
+                      "display-lg-mobile": [
+                              "Noto Serif"
+                      ],
+                      "body-md": [
+                              "Hanken Grotesk"
+                      ],
+                      "headline-md": [
+                              "Noto Serif"
+                      ],
+                      "body-lg": [
+                              "Hanken Grotesk"
+                      ]
+              },
+              "fontSize": {
+                      "label-caps": [
+                              "12px",
+                              {
+                                      "lineHeight": "1.0",
+                                      "letterSpacing": "0.1em",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "display-lg": [
+                              "48px",
+                              {
+                                      "lineHeight": "1.1",
+                                      "letterSpacing": "-0.02em",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "display-lg-mobile": [
+                              "32px",
+                              {
+                                      "lineHeight": "1.2",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "body-md": [
+                              "16px",
+                              {
+                                      "lineHeight": "1.6",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "headline-md": [
+                              "24px",
+                              {
+                                      "lineHeight": "1.4",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "body-lg": [
+                              "18px",
+                              {
+                                      "lineHeight": "1.6",
+                                      "fontWeight": "400"
+                              }
+                      ]
+              }
+      },
+          },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .material-symbols-outlined.filled {
+            font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md min-h-screen antialiased flex flex-col">
+<!-- Top Navigation (Background Context) -->
+<header class="bg-surface w-full h-16 border-b border-outline-variant flex justify-between items-center px-gutter fixed top-0 z-30">
+<div class="flex items-center space-x-8">
+<h1 class="font-headline-md text-headline-md font-bold text-primary">重庆旅行指南</h1>
+<nav class="hidden md:flex space-x-6">
+<!-- Navigation intent is focused on planning/saving, but it's a login modal over existing content. Contextually, "我的行程" might be relevant after saving, but right now we are in planning context. For the shell, we'll keep them inactive to focus on the modal. -->
+<a class="text-secondary hover:text-primary transition-colors duration-200 ease-in-out cursor-pointer active:opacity-70 font-body-md text-body-md" href="#">我的行程</a>
+<a class="text-secondary hover:text-primary transition-colors duration-200 ease-in-out cursor-pointer active:opacity-70 font-body-md text-body-md" href="#">重庆知识</a>
+</nav>
+</div>
+<div class="flex items-center space-x-4">
+<button class="font-body-md text-body-md text-primary hover:bg-surface-variant px-4 py-2 rounded-lg transition-colors">保存行程</button>
+<button aria-label="Account" class="text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined" data-icon="account_circle">account_circle</span>
+</button>
+</div>
+</header>
+<!-- Side Navigation (Background Context) -->
+<aside class="bg-surface-container-low h-screen w-64 flex-col border-r border-outline-variant fixed left-0 top-0 pt-16 z-20 hidden lg:flex">
+<div class="p-6">
+<h2 class="font-label-caps text-label-caps text-on-surface-variant mb-1">旅行规划器</h2>
+<p class="font-body-md text-body-md text-secondary text-sm">AI 驱动建议</p>
+</div>
+<nav class="flex-1 px-4 space-y-2 mt-4">
+<!-- Simulating an active state in the planner, e.g., Timeline or Constraints -->
+<a class="flex items-center space-x-3 bg-secondary-container text-on-secondary-container rounded-lg px-4 py-3 transition-all duration-300 ease-in-out" href="#">
+<span class="material-symbols-outlined" data-icon="tune">tune</span>
+<span class="font-body-md text-body-md">约束条件</span>
+</a>
+<a class="flex items-center space-x-3 text-secondary px-4 py-3 hover:bg-surface-container-high transition-all duration-300 ease-in-out rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="timeline">timeline</span>
+<span class="font-body-md text-body-md">行程轴</span>
+</a>
+<a class="flex items-center space-x-3 text-secondary px-4 py-3 hover:bg-surface-container-high transition-all duration-300 ease-in-out rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="map">map</span>
+<span class="font-body-md text-body-md">地图视图</span>
+</a>
+<a class="flex items-center space-x-3 text-secondary px-4 py-3 hover:bg-surface-container-high transition-all duration-300 ease-in-out rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="menu_book">menu_book</span>
+<span class="font-body-md text-body-md">参考来源</span>
+</a>
+</nav>
+<div class="p-4 border-t border-outline-variant/50">
+<button class="w-full text-center py-2 text-primary font-body-md hover:bg-surface-variant rounded-lg transition-colors">重置规划</button>
+</div>
+<div class="px-4 pb-6 mt-2 space-y-2">
+<a class="flex items-center space-x-3 text-secondary px-4 py-2 hover:bg-surface-container-high transition-all rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="font-body-md text-sm">设置</span>
+</a>
+<a class="flex items-center space-x-3 text-secondary px-4 py-2 hover:bg-surface-container-high transition-all rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="help">help</span>
+<span class="font-body-md text-sm">帮助</span>
+</a>
+</div>
+</aside>
+<!-- Main Workspace Area (Background Context) -->
+<main class="flex-1 lg:ml-64 pt-16 flex flex-col items-center justify-start p-8 relative z-10">
+<div class="max-w-container-max w-full">
+<!-- Simulated Workspace Content behind Modal -->
+<div class="bg-surface-container-lowest p-8 rounded-xl border border-outline-variant/50 mb-8 max-w-2xl blur-sm opacity-60">
+<h3 class="font-headline-md text-headline-md text-on-surface mb-4">行程摘要</h3>
+<p class="font-body-lg text-body-lg text-secondary mb-6 italic font-serif">"周六下午到重庆 · 周日晚上离开 · 带父母 · 少走路"</p>
+<div class="space-y-4">
+<div class="h-24 bg-surface-container rounded-lg w-full"></div>
+<div class="h-32 bg-surface-container rounded-lg w-full"></div>
+</div>
+</div>
+</div>
+</main>
+<!-- Overlay / Scrim -->
+<div class="fixed inset-0 bg-inverse-surface/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+<!-- Login Modal Container -->
+<div class="bg-surface w-full max-w-md rounded-2xl shadow-2xl overflow-hidden flex flex-col" style="box-shadow: 0 24px 48px rgba(26, 26, 26, 0.05);">
+<!-- Modal Header / Content -->
+<div class="p-8 pb-6 bg-surface">
+<div class="mb-8">
+<h2 class="font-display-lg text-display-lg text-on-surface mb-2 tracking-tight">保存这次旅行</h2>
+<p class="font-body-md text-body-md text-secondary leading-relaxed">
+                        登录后即可跨设备继续规划；你当前的行程不会丢失。
+                    </p>
+</div>
+<!-- Tabs -->
+<div class="flex border-b border-outline-variant mb-6">
+<button class="flex-1 pb-3 text-center font-body-md text-primary font-bold border-b-2 border-primary">登录</button>
+<button class="flex-1 pb-3 text-center font-body-md text-secondary hover:text-primary transition-colors">注册</button>
+</div>
+<!-- Form -->
+<form class="space-y-5">
+<!-- Error State Note (Subtle but visible) -->
+<div class="bg-error-container/30 border border-error/20 p-3 rounded-lg flex items-start space-x-2">
+<span class="material-symbols-outlined text-error text-sm mt-0.5" data-icon="error">error</span>
+<p class="font-body-md text-error text-sm leading-snug">登录失败，当前行程仍已保留，请重试</p>
+</div>
+<div class="space-y-1">
+<label class="font-label-caps text-label-caps text-on-surface-variant block ml-1" for="identifier">手机号或邮箱</label>
+<input class="w-full bg-[#F2EFE9] border-none rounded-lg px-4 py-3 font-body-md text-on-surface focus:ring-1 focus:ring-outline transition-shadow placeholder:text-secondary-fixed-dim" id="identifier" name="identifier" placeholder="输入账号" type="text"/>
+</div>
+<div class="space-y-1">
+<label class="font-label-caps text-label-caps text-on-surface-variant block ml-1" for="password">密码</label>
+<input class="w-full bg-[#F2EFE9] border-none rounded-lg px-4 py-3 font-body-md text-on-surface focus:ring-1 focus:ring-outline transition-shadow placeholder:text-secondary-fixed-dim" id="password" name="password" placeholder="••••••••" type="password"/>
+</div>
+<div class="pt-4 flex flex-col space-y-4">
+<button class="w-full bg-primary text-on-primary font-body-md py-3 px-6 rounded-lg hover:bg-surface-tint transition-colors flex items-center justify-center space-x-2 shadow-sm" type="submit">
+<span>登录并保存</span>
+</button>
+<button class="w-full text-secondary font-body-md py-2 px-6 rounded-lg hover:bg-surface-container-low transition-colors text-sm" type="button">
+                            先回到规划
+                        </button>
+</div>
+</form>
+</div>
+<!-- Success Return Panel (Simulated visual anchor at bottom) -->
+<div class="bg-surface-container-low px-8 py-4 border-t border-outline-variant/30 flex items-center justify-between">
+<div class="flex items-center space-x-2 text-on-surface-variant">
+<span class="material-symbols-outlined text-sm filled text-primary" data-icon="check_circle">check_circle</span>
+<span class="font-body-md text-sm">已保存到我的行程</span>
+</div>
+<a class="font-body-md text-sm text-primary hover:underline" href="#">查看我的行程</a>
+</div>
+</div>
+</div>
+</body></html>

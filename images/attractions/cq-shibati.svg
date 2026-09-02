@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 360" width="100%" height="100%">
+  <defs>
+    <linearGradient id="grad-cq-shibati" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3a270d" />
+      <stop offset="100%" stop-color="#181206" />
+    </linearGradient>
+    <radialGradient id="glow-cq-shibati" cx="75%" cy="30%" r="60%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.35" />
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.5" />
+    </filter>
+  </defs>
+
+  <rect width="600" height="360" rx="16" fill="url(#grad-cq-shibati)" />
+  <rect width="600" height="360" rx="16" fill="url(#glow-cq-shibati)" />
+
+  <!-- Background Decorative Grid & Wave Lines -->
+  <g opacity="0.08" stroke="#ffffff" stroke-width="1">
+    <line x1="0" y1="90" x2="600" y2="90" />
+    <line x1="0" y1="180" x2="600" y2="180" />
+    <line x1="0" y1="270" x2="600" y2="270" />
+    <line x1="150" y1="0" x2="150" y2="360" />
+    <line x1="300" y1="0" x2="300" y2="360" />
+    <line x1="450" y1="0" x2="450" y2="360" />
+  </g>
+
+  <!-- Big Decorative Icon Watermark -->
+  <text x="470" y="240" font-size="140" fill="#f59e0b" opacity="0.16" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-weight="900" text-anchor="middle">梯</text>
+
+  <!-- District Badge -->
+  <g transform="translate(40, 40)">
+    <rect width="70" height="24" rx="6" fill="#f59e0b" />
+    <text x="35" y="16" fill="#18181b" font-size="12" font-weight="700" text-anchor="middle" font-family="system-ui, sans-serif">渝中区</text>
+  </g>
+
+  <!-- Attraction Title -->
+  <text x="40" y="115" fill="#ffffff" font-size="32" font-weight="800" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" filter="url(#shadow)">十八梯传统风貌区</text>
+
+  <!-- Summary / Subtitle -->
+  <text x="40" y="155" fill="#fef3c7" font-size="15" font-weight="400" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" opacity="0.9">
+    <tspan x="40" dy="0">连接上半城与下半城的母城记忆，入夜后吊脚楼灯火温</tspan>
+    <tspan x="40" dy="24">馨如画。</tspan>
+  </text>
+
+  <!-- Key Attributes Line -->
+  <g transform="translate(40, 225)" font-size="13" font-family="system-ui, sans-serif">
+    <text fill="#94a3b8">⏱️ 游玩时长：<tspan fill="#e2e8f0" font-weight="600">约 90 分钟</tspan></text>
+    <text x="180" fill="#94a3b8">🎫 门票：<tspan fill="#e2e8f0" font-weight="600">免费开放 </tspan></text>
+    <text x="330" fill="#94a3b8">🚶 强度：<tspan fill="#fbbf24" font-weight="600">适中步行</tspan></text>
+  </g>
+
+  <!-- Tags -->
+  
+    <g transform="translate(40, 270)">
+      <rect width="85" height="26" rx="13" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1" />
+      <text x="42.5" y="17" fill="#f59e0b" font-size="12" font-weight="600" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif">市井烟火</text>
+    </g>
+  
+    <g transform="translate(135, 270)">
+      <rect width="85" height="26" rx="13" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1" />
+      <text x="42.5" y="17" fill="#f59e0b" font-size="12" font-weight="600" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif">老重庆</text>
+    </g>
+  
+    <g transform="translate(230, 270)">
+      <rect width="85" height="26" rx="13" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1" />
+      <text x="42.5" y="17" fill="#f59e0b" font-size="12" font-weight="600" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif">夜景</text>
+    </g>
+  
+</svg>

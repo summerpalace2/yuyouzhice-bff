@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+
+<html class="light" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>渝游智策 - Planning Workspace States</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,100..900;1,100..900&amp;family=Noto+Serif:ital,wght@0,100..900;1,100..900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "background": "#fcf9f8",
+                        "surface-tint": "#ad302f",
+                        "on-tertiary-container": "#d4d0c3",
+                        "on-secondary-fixed-variant": "#48473e",
+                        "tertiary": "#434238",
+                        "secondary": "#605e55",
+                        "on-primary-fixed": "#410004",
+                        "secondary-fixed": "#e6e2d6",
+                        "inverse-on-surface": "#f3f0ef",
+                        "outline": "#8c716e",
+                        "primary": "#840f16",
+                        "on-tertiary-fixed": "#1d1c14",
+                        "on-secondary": "#ffffff",
+                        "primary-fixed-dim": "#ffb3ad",
+                        "on-secondary-fixed": "#1d1c15",
+                        "surface": "#fcf9f8",
+                        "on-primary-container": "#ffc0bb",
+                        "on-error-container": "#93000a",
+                        "tertiary-fixed-dim": "#cac6ba",
+                        "surface-container-lowest": "#ffffff",
+                        "primary-fixed": "#ffdad7",
+                        "on-primary-fixed-variant": "#8c171b",
+                        "inverse-surface": "#313030",
+                        "error-container": "#ffdad6",
+                        "on-background": "#1c1b1b",
+                        "on-error": "#ffffff",
+                        "surface-container": "#f0eded",
+                        "secondary-fixed-dim": "#cac6bb",
+                        "tertiary-container": "#5b594f",
+                        "secondary-container": "#e6e2d6",
+                        "on-secondary-container": "#66645b",
+                        "surface-variant": "#e5e2e1",
+                        "surface-container-highest": "#e5e2e1",
+                        "primary-container": "#a52a2a",
+                        "surface-dim": "#dcd9d9",
+                        "on-tertiary": "#ffffff",
+                        "surface-bright": "#fcf9f8",
+                        "error": "#ba1a1a",
+                        "on-tertiary-fixed-variant": "#49473d",
+                        "on-surface-variant": "#58413f",
+                        "inverse-primary": "#ffb3ad",
+                        "surface-container-low": "#f6f3f2",
+                        "on-primary": "#ffffff",
+                        "tertiary-fixed": "#e7e2d5",
+                        "on-surface": "#1c1b1b",
+                        "surface-container-high": "#eae7e7",
+                        "outline-variant": "#e0bfbc"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "margin-mobile": "20px",
+                        "gutter": "32px",
+                        "asymmetric-offset": "64px",
+                        "unit": "8px",
+                        "container-max": "1200px"
+                    },
+                    "fontFamily": {
+                        "display-lg": ["Noto Serif"],
+                        "headline-md": ["Noto Serif"],
+                        "body-lg": ["Hanken Grotesk"],
+                        "body-md": ["Hanken Grotesk"],
+                        "label-caps": ["Hanken Grotesk"],
+                        "display-lg-mobile": ["Noto Serif"]
+                    },
+                    "fontSize": {
+                        "display-lg": ["48px", { "lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "headline-md": ["24px", { "lineHeight": "1.4", "fontWeight": "600" }],
+                        "body-lg": ["18px", { "lineHeight": "1.6", "fontWeight": "400" }],
+                        "body-md": ["16px", { "lineHeight": "1.6", "fontWeight": "400" }],
+                        "label-caps": ["12px", { "lineHeight": "1.0", "letterSpacing": "0.1em", "fontWeight": "700" }],
+                        "display-lg-mobile": ["32px", { "lineHeight": "1.2", "fontWeight": "700" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .progress-bar-animated {
+            background: linear-gradient(90deg, transparent, rgba(173, 48, 47, 0.2), transparent);
+            background-size: 200% 100%;
+            animation: loading 2s infinite linear;
+        }
+        @keyframes loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        .paper-shadow {
+            box-shadow: 0 4px 24px rgba(26, 26, 26, 0.05);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md min-h-screen flex selection:bg-primary-container selection:text-on-primary-container">
+<!-- SideNavBar (Desktop) -->
+<nav class="bg-surface-container-low border-r-[0.5px] border-outline-variant h-screen w-64 fixed left-0 top-0 hidden md:flex flex-col py-8 gap-4 z-40">
+<!-- Header -->
+<div class="px-6 mb-8 flex flex-col gap-4">
+<div class="w-12 h-12 rounded-full overflow-hidden border border-outline-variant">
+<img alt="Traveler Profile" class="object-cover w-full h-full" data-alt="A serene, minimalist portrait of a traveler against the historic backdrop of Chongqing's misty mountains, rendered in muted ivory and crimson tones, conveying a sense of quiet authority and premium travel experience." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAKJyqp_ZkAeXf86e3t49Gf8UrUI0B3Wv0buQhfONXi3_DwZ7oZA_P8ewcafA71-XWLXmTbeKeko6zGRkwNzH-oN8HKlvHy0u0Xon8rzX0ut4eW80_lEMMHjKEt-u4X7gw7xuNCYsisKeyMnyg7N0wEz2hW9OgZQJH44wjqWYKNSML8OeCvAbM1jof7ig8om7n5X1aEsE7SXXKy5T_FYJihnMqyAxyrtGHJY0t9cy9cIzKrKzxBROTeADkGGgt1cvCGYosUIrVRdOEW"/>
+</div>
+<div>
+<h1 class="font-headline-md text-headline-md text-primary tracking-tight">Planning Engine</h1>
+<p class="font-body-md text-body-md text-secondary mt-1">Chongqing Explorer</p>
+</div>
+</div>
+<!-- Main Navigation Tabs -->
+<div class="flex-1 flex flex-col px-4 gap-1">
+<!-- Active Tab: Timeline (Assuming this fits the Planning Engine intent) -->
+<a class="bg-primary text-on-primary rounded-xl mx-2 my-1 px-4 py-3 flex items-center gap-3 transition-colors duration-300 ease-in-out cursor-pointer group" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">calendar_today</span>
+<span class="font-body-md font-medium">Timeline</span>
+</a>
+<!-- Inactive Tabs -->
+<a class="text-secondary hover:bg-surface-container mx-2 my-1 rounded-xl px-4 py-3 flex items-center gap-3 hover:bg-surface-container-high transition-colors duration-300 ease-in-out cursor-pointer group" href="#">
+<span class="material-symbols-outlined">tune</span>
+<span class="font-body-md">Constraints</span>
+</a>
+<a class="text-secondary hover:bg-surface-container mx-2 my-1 rounded-xl px-4 py-3 flex items-center gap-3 hover:bg-surface-container-high transition-colors duration-300 ease-in-out cursor-pointer group" href="#">
+<span class="material-symbols-outlined">auto_stories</span>
+<span class="font-body-md">Sources</span>
+</a>
+</div>
+<!-- CTA -->
+<div class="px-6 mt-4">
+<button class="w-full bg-primary text-on-primary font-body-md py-3 rounded-lg hover:bg-on-primary-fixed-variant transition-colors duration-200">
+                Generate Itinerary
+            </button>
+</div>
+<!-- Footer Tabs -->
+<div class="px-4 mt-auto pt-4 border-t-[0.5px] border-outline-variant flex flex-col gap-1">
+<a class="text-secondary hover:bg-surface-container mx-2 my-1 rounded-xl px-4 py-3 flex items-center gap-3 hover:bg-surface-container-high transition-colors duration-300 ease-in-out cursor-pointer group" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-body-md">Settings</span>
+</a>
+<a class="text-secondary hover:bg-surface-container mx-2 my-1 rounded-xl px-4 py-3 flex items-center gap-3 hover:bg-surface-container-high transition-colors duration-300 ease-in-out cursor-pointer group" href="#">
+<span class="material-symbols-outlined">help</span>
+<span class="font-body-md">Help</span>
+</a>
+</div>
+</nav>
+<!-- Main Content Wrapper (Accounts for SideNav) -->
+<div class="flex-1 md:ml-64 flex flex-col min-h-screen">
+<!-- TopNavBar -->
+<header class="bg-background w-full top-0 sticky z-30 border-b-[0.5px] border-outline-variant">
+<div class="flex justify-between items-center px-margin-mobile md:px-gutter py-4 w-full max-w-container-max mx-auto">
+<!-- Brand -->
+<div class="font-display-lg text-display-lg-mobile md:text-display-lg text-primary tracking-tight cursor-pointer transition-transform duration-200 active:scale-95">
+                    渝游智策
+                </div>
+<!-- Center Navigation -->
+<nav class="hidden md:flex items-center gap-8 font-body-lg text-body-lg">
+<a class="text-secondary hover:text-primary transition-colors hover:text-primary transition-all cursor-pointer" href="#">
+                        My Trips
+                    </a>
+<!-- Assuming Knowledge relates to Planning/Engine context loosely, making it active -->
+<a class="text-primary border-b-2 border-primary pb-1 cursor-pointer transition-transform duration-200 active:scale-95 hover:text-primary transition-all" href="#">
+                        Knowledge
+                    </a>
+</nav>
+<!-- Trailing Actions -->
+<div class="flex items-center gap-4">
+<button class="text-secondary hover:text-primary transition-colors cursor-pointer transition-transform duration-200 active:scale-95">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="text-secondary hover:text-primary transition-colors cursor-pointer transition-transform duration-200 active:scale-95">
+<span class="material-symbols-outlined">account_circle</span>
+</button>
+</div>
+</div>
+</header>
+<!-- Main Dashboard Canvas -->
+<main class="flex-1 w-full max-w-container-max mx-auto px-margin-mobile md:px-gutter py-12 md:py-asymmetric-offset">
+<!-- Asymmetric Grid Layout -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-8">
+<!-- Left Column (AI Status) - Spans cols 1-5 -->
+<div class="lg:col-span-5 flex flex-col justify-between">
+<div>
+<!-- Headline -->
+<h2 class="font-display-lg text-display-lg-mobile md:text-display-lg text-primary mb-12">
+                            正在为你组合重庆两日
+                        </h2>
+<!-- Operational Stages List -->
+<div class="flex flex-col gap-8 relative">
+<!-- Subtle connecting line behind stages -->
+<div class="absolute left-[11px] top-4 bottom-4 w-[1px] bg-outline-variant z-0"></div>
+<!-- Stage 1: Complete -->
+<div class="flex items-start gap-6 relative z-10">
+<div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center shrink-0 mt-1">
+<span class="material-symbols-outlined text-[14px] text-on-primary font-bold" style="font-variation-settings: 'FILL' 1;">check</span>
+</div>
+<div>
+<h3 class="font-body-lg text-body-lg text-on-background">已理解旅行条件</h3>
+<p class="font-body-md text-secondary mt-1">分析完成约束与偏好</p>
+</div>
+</div>
+<!-- Stage 2: Active/Loading -->
+<div class="flex items-start gap-6 relative z-10">
+<div class="w-6 h-6 rounded-full border-2 border-primary bg-background flex items-center justify-center shrink-0 mt-1">
+<div class="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+</div>
+<div class="w-full">
+<h3 class="font-body-lg text-body-lg text-primary font-medium">正在检索重庆可信信息</h3>
+<!-- Progress Bar -->
+<div class="h-1 bg-surface-variant w-full mt-3 rounded-full overflow-hidden">
+<div class="h-full w-full progress-bar-animated bg-primary-container"></div>
+</div>
+</div>
+</div>
+<!-- Stage 3: Pending -->
+<div class="flex items-start gap-6 relative z-10">
+<div class="w-6 h-6 rounded-full border border-outline-variant bg-surface-container-low flex items-center justify-center shrink-0 mt-1">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary-fixed-dim"></span>
+</div>
+<div>
+<h3 class="font-body-lg text-body-lg text-secondary">正在组合路线</h3>
+</div>
+</div>
+<!-- Stage 4: Pending -->
+<div class="flex items-start gap-6 relative z-10">
+<div class="w-6 h-6 rounded-full border border-outline-variant bg-surface-container-low flex items-center justify-center shrink-0 mt-1">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary-fixed-dim"></span>
+</div>
+<div>
+<h3 class="font-body-lg text-body-lg text-secondary">正在生成旅行方案</h3>
+</div>
+</div>
+</div>
+<!-- Secondary Text -->
+<div class="mt-8">
+<p class="font-label-caps text-label-caps text-outline flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px]">info</span>
+                                不会展示模型思考过程
+                            </p>
+</div>
+</div>
+<!-- Constraints Chips Row (Bottom Left) -->
+<div class="mt-16 pt-8 border-t-[0.5px] border-outline-variant">
+<p class="font-label-caps text-label-caps text-secondary mb-4 uppercase">Preserved Constraints</p>
+<div class="flex flex-wrap gap-3">
+<span class="px-4 py-2 bg-secondary-fixed text-on-secondary-fixed-variant rounded-full font-body-md text-sm border border-outline-variant">带父母</span>
+<span class="px-4 py-2 bg-secondary-fixed text-on-secondary-fixed-variant rounded-full font-body-md text-sm border border-outline-variant">少走路</span>
+<span class="px-4 py-2 bg-secondary-fixed text-on-secondary-fixed-variant rounded-full font-body-md text-sm border border-outline-variant">预算有限</span>
+</div>
+</div>
+</div>
+<!-- Right Column (State Cards) - Spans cols 7-12 (leaves col 6 empty for asymmetric spacing) -->
+<div class="lg:col-span-6 lg:col-start-7 flex flex-col gap-6">
+<!-- Top subtle label -->
+<div class="font-label-caps text-label-caps text-outline mb-2">SYSTEM STATES &amp; EXCEPTIONS</div>
+<!-- Card 1: Partial Data / 部分数据 -->
+<div class="bg-surface-container-lowest paper-shadow rounded-xl p-6 border-[0.5px] border-outline-variant relative overflow-hidden group">
+<!-- Decorative top accent -->
+<div class="absolute top-0 left-0 w-full h-1 bg-tertiary-container"></div>
+<div class="flex justify-between items-start mb-6">
+<h4 class="font-headline-md text-[20px] text-on-surface">部分数据 (Partial Data)</h4>
+<span class="font-label-caps text-tertiary-container bg-surface-container px-2 py-1 rounded">WARNING</span>
+</div>
+<div class="space-y-4">
+<!-- List Item 1 -->
+<div class="flex justify-between items-center p-3 bg-surface-container-low rounded-lg border border-dashed border-outline-variant">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-outline">local_activity</span>
+<span class="font-body-md text-on-surface">洪崖洞门票</span>
+</div>
+<span class="font-label-caps text-[10px] text-surface-tint bg-error-container px-2 py-1 rounded">UNKNOWN · 需确认</span>
+</div>
+<!-- List Item 2 -->
+<div class="flex justify-between items-center p-3 bg-surface-container-low rounded-lg border border-dashed border-outline-variant">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-outline">directions_walk</span>
+<span class="font-body-md text-on-surface">步行路线</span>
+</div>
+<span class="font-label-caps text-[10px] text-secondary bg-surface-variant px-2 py-1 rounded">DYNAMIC · 实时变化</span>
+</div>
+</div>
+</div>
+<!-- Card 2: Fact Conflict / 事实冲突 -->
+<div class="bg-surface-container-lowest paper-shadow rounded-xl p-6 border-[0.5px] border-outline-variant relative">
+<!-- Decorative top accent -->
+<div class="absolute top-0 left-0 w-full h-1 bg-surface-tint"></div>
+<div class="flex justify-between items-start mb-6">
+<h4 class="font-headline-md text-[20px] text-on-surface">事实冲突 (Fact Conflict)</h4>
+<span class="font-label-caps text-error bg-error-container px-2 py-1 rounded">CONFLICT</span>
+</div>
+<p class="font-body-md text-secondary mb-4">Multiple sources report different opening hours for 三峡博物馆.</p>
+<div class="flex gap-4 mb-6">
+<div class="flex-1 bg-surface-container-low p-3 rounded-lg border-[0.5px] border-outline-variant border-l-4 border-l-outline">
+<p class="font-label-caps text-outline mb-1">SOURCE A</p>
+<p class="font-body-md text-on-surface">09:00 - 17:00</p>
+</div>
+<div class="flex-1 bg-surface-container-low p-3 rounded-lg border-[0.5px] border-outline-variant border-l-4 border-l-outline">
+<p class="font-label-caps text-outline mb-1">SOURCE B</p>
+<p class="font-body-md text-on-surface">09:30 - 16:30</p>
+</div>
+</div>
+<button class="font-body-md border border-outline text-on-surface py-2 px-6 rounded-lg hover:bg-surface-container transition-colors duration-200">
+                            查看冲突
+                        </button>
+</div>
+<!-- Card 3: Service Unavailable / 服务暂不可用 -->
+<div class="bg-surface-container-lowest paper-shadow rounded-xl p-6 border-[0.5px] border-outline-variant relative opacity-90">
+<div class="absolute top-0 left-0 w-full h-1 bg-outline"></div>
+<div class="flex items-center gap-3 mb-4">
+<span class="material-symbols-outlined text-outline">cloud_off</span>
+<h4 class="font-headline-md text-[20px] text-on-surface">服务暂不可用</h4>
+</div>
+<p class="font-body-md text-secondary mb-6 leading-relaxed">
+                            网络连接出现波动。你的条件和当前草稿已保留，请尝试重新连接。
+                        </p>
+<button class="bg-primary text-on-primary font-body-md py-2 px-8 rounded-lg hover:bg-on-primary-fixed-variant transition-colors duration-200 shadow-sm">
+                            重试
+                        </button>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>
