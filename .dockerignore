@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+!.env.example
+.idea
+.adg
+data
+logs
+work
+frontend
+docs
+outputs
+scripts
+*.log
+*.png
+*.zip

@@ -2495,7 +2495,7 @@ async function staticFile(req, res, pathname) {
   if (!full.startsWith(ROOT) || !existsSync(full)) {
     // 如果是缺失的图片，友好降级提供 SVG 占位
     if (relative.includes('.png') || relative.includes('.jpg') || relative.includes('.svg')) {
-      const fallbackSvg = path.join(ROOT, 'outputs', 'attraction-hero.svg');
+      const fallbackSvg = path.join(ROOT, 'images', 'attraction-hero.svg');
       if (existsSync(fallbackSvg)) {
         const svgContent = await readFile(fallbackSvg);
         res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-cache, max-age=0, must-revalidate' });
