@@ -325,25 +325,34 @@ function createTestStub() {
   function candidatesFor(userId) { if (!memoryCandidates.has(userId)) memoryCandidates.set(userId, []); return memoryCandidates.get(userId); }
   function suggestMemoryCandidate(message = '') {
     const text = String(message || '').trim();
-    if (!text || /(今天|明天|后天|今晚|这次|本次|当前|这一趟|这趟|当天)/.test(text)) return null;
-    if (!/(记住|以后|默认|通常|习惯|总是|一直|经常|一般|更喜欢|偏爱|不喜欢|不吃|不喝|过敏|怕晒|怕热|受不了|优先|首选|我|我们|家里)/.test(text)) return null;
-    if (/(轮椅|无障碍|婴儿车|腿脚不便|行动不便)/.test(text)) return { category: 'ACCESSIBILITY', content: '出行需要无障碍、少台阶与便于休息的安排', confidence: 0.95 };
-    if (/(少走路|不想走太多|少爬坡|轻松一点|不爱走路|体力.*有限)/.test(text)) return { category: 'PACE', content: '偏好少走路，优先平路、电梯与短步行', confidence: 0.93 };
-    if (/(过敏|忌口|清真|素食|纯素)/.test(text)) return { category: 'DIET', content: '饮食有明确限制，需要优先确认可选餐食', confidence: 0.96 };
-    if (/(不吃辣|少辣|清淡|不吃香菜|不吃.*海鲜)/.test(text)) return { category: 'DIET', content: '饮食偏好清淡，尽量少辣并避开明确忌口', confidence: 0.92 };
-    if (/(打车|出租车|网约车)/.test(text)) return { category: 'TRANSPORT', content: '出行时优先打车或网约车', confidence: 0.91 };
-    if (/(地铁|公交|公共交通)/.test(text)) return { category: 'TRANSPORT', content: '出行时更愿意使用公共交通', confidence: 0.86 };
-    if (/(预算|省钱|性价比|免费)/.test(text)) return { category: 'BUDGET', content: '出行时重视预算与性价比', confidence: 0.85 };
-    if (/(怕晒|怕热|雨天|下雨.*室内|避暑)/.test(text)) return { category: 'WEATHER', content: '行程更在意天气体感，优先阴凉、室内或可避雨安排', confidence: 0.87 };
-    if (/(不喜欢早起|睡到自然醒|晚起)/.test(text)) return { category: 'TIME', content: '出行节奏不宜太早，偏好从容安排', confidence: 0.84 };
-    if (/(酒店.*安静|住宿.*安静|住得.*方便)/.test(text)) return { category: 'STAY', content: '住宿更看重安静与交通便利', confidence: 0.82 };
-    if (/(情侣|对象|爱人|两个人)/.test(text)) return { category: 'COMPANION', content: '通常以情侣出游方式安排行程', confidence: 0.84 };
-    if (/(带娃|孩子|亲子)/.test(text)) return { category: 'COMPANION', content: '出行时常需要兼顾亲子体验', confidence: 0.84 };
-    if (/(父母|长辈|老人)/.test(text)) return { category: 'COMPANION', content: '出行时常需要兼顾长辈的舒适度', confidence: 0.84 };
-    if (/(博物馆|美术馆|展览|人文|历史|古迹)/.test(text)) return { category: 'INTEREST', content: '偏爱人文历史与室内文化场馆', confidence: 0.87 };
-    if (/(夜景|江景)/.test(text)) return { category: 'INTEREST', content: '喜欢山城夜景与江景体验', confidence: 0.84 };
-    if (/(拍照|摄影|出片)/.test(text)) return { category: 'INTEREST', content: '旅行时重视拍照与景观视角', confidence: 0.83 };
-    if (/(自然|徒步|爬山|山水)/.test(text)) return { category: 'INTEREST', content: '偏爱自然山水与户外景观', confidence: 0.81 };
+    if (!text) return null;
+    if (/(后面|以后|后续|一直|通常|习惯|记住|默认|多推荐|帮我推荐|想吃|爱吃|更喜欢)/.test(text)) {
+      // not current trip only
+    } else if (/(仅限今天|只要今天|只在今天|仅本次|仅这一趟|只这趟|单单今天)/.test(text)) {
+      return null;
+    }
+    if (!/(记住|以后|后续|后面|默认|通常|习惯|总是|一直|经常|一般|更喜欢|偏爱|不喜欢|不吃|不喝|想吃|爱吃|喜辣|多推荐|帮我推荐|多点|少点|过敏|怕晒|怕热|受不了|优先|首选|我|我们|家里)/.test(text)) return null;
+    if (/(轮椅|无障碍|婴儿车|推车|腿脚不便|行动不便|拄拐|拐杖|术后|台阶高)/.test(text)) return { category: 'ACCESSIBILITY', content: '出行需要无障碍、少台阶与便于休息的安排', confidence: 0.95 };
+    if (/(火锅|老火锅|九宫格|串串|冷锅串串|美蛙鱼头|麻辣|喜辣|爱吃辣|能吃辣|喜欢.*辣|多点辣|偏好.*辣|推荐.*辣|辣的食物|重口味|重辣|微辣|无辣不欢|嗜辣|江湖菜|毛血旺|辣子鸡|水煮鱼|川菜|烧烤)/.test(text)) return { category: 'DIET', content: '饮食偏好麻辣、地道重庆火锅与江湖菜风味', confidence: 0.94 };
+    if (/(过敏|忌口|清真|素食|纯素|不能吃花生|海鲜过敏|不吃内脏|忌内脏|乳糖不耐)/.test(text)) return { category: 'DIET', content: '饮食有明确限制或过敏禁忌，需优先确认可选餐食', confidence: 0.96 };
+    if (/(不吃辣|不能吃辣|少辣|清淡|不辣|不吃香菜|不吃.*海鲜|不吃肉|少油|少盐|免葱|养生餐)/.test(text)) return { category: 'DIET', content: '饮食偏好清淡少辣，避开刺激性食物与忌口', confidence: 0.92 };
+    if (/(小吃|酸辣粉|小面|重庆小面|抄手|老麻抄手|豆花|甜品|糖水|陈麻花|糍粑|冰粉|凉糕|咖啡|精酿|特调|茶馆|盖碗茶|夜市|路边摊)/.test(text)) return { category: 'DIET', content: '偏好街头特色小吃、巴渝名点与市井烟火风味', confidence: 0.88 };
+    if (/(少走路|不想走太多|走不动|爬不动|少爬坡|少台阶|轻松一点|不爱走路|体力.*有限|慢节奏|休闲|不想太累|别太赶|不要特种兵|不特种兵|平地优先|平路优先)/.test(text)) return { category: 'PACE', content: '偏好少走路，优先平路、电梯与短步行', confidence: 0.93 };
+    if (/(特种兵|多走走|充实|暴走|多看几个|多安排点|多逛几个|深度游|不怕累|精力充沛|徒步)/.test(text)) return { category: 'PACE', content: '偏好高密度充实游览，体力充沛，愿意多走多看', confidence: 0.89 };
+    if (/(打车|出租车|网约车|滴滴|包车|自驾|租车|晕车|不想挤)/.test(text)) return { category: 'TRANSPORT', content: '出行时优先打车或网约车', confidence: 0.91 };
+    if (/(地铁|公交|公共交通|轻轨|轨道交通|体验轻轨|低碳出行)/.test(text)) return { category: 'TRANSPORT', content: '出行时更愿意使用公共交通', confidence: 0.86 };
+    if (/(预算有限|省钱|性价比|免费|穷游|学生党|平价|实惠)/.test(text)) return { category: 'BUDGET', content: '出行时重视预算与性价比，优先平价与免费景点', confidence: 0.85 };
+    if (/(品质|高端|讲究品质|黑珍珠|预算充足|不差钱|高档)/.test(text)) return { category: 'BUDGET', content: '注重出行品质与舒适度，偏好高端体验', confidence: 0.88 };
+    if (/(怕晒|怕热|容易中暑|雨天|下雨.*室内|避雨|避暑|防晒|吹空调)/.test(text)) return { category: 'WEATHER', content: '行程更在意天气体感，优先阴凉、室内或可避雨安排', confidence: 0.87 };
+    if (/(不喜欢早起|睡到自然醒|晚起|起不来|夜猫子|上午不出发|下午才出门)/.test(text)) return { category: 'TIME', content: '出行节奏不宜太早，偏好从容晚起安排', confidence: 0.84 };
+    if (/(酒店.*安静|住宿.*安静|住得.*方便|靠近地铁.*住|住江景)/.test(text)) return { category: 'STAY', content: '住宿更看重安静、江景与交通便利', confidence: 0.82 };
+    if (/(带娃|孩子|宝宝|小朋友|亲子|游乐场|童趣|推车出行)/.test(text)) return { category: 'COMPANION', content: '出行时常需要兼顾亲子与儿童体验', confidence: 0.84 };
+    if (/(父母|长辈|老人|爸妈|带老人|老年人)/.test(text)) return { category: 'COMPANION', content: '出行时常需要兼顾长辈的体力与舒适度', confidence: 0.84 };
+    if (/(情侣|对象|爱人|两个人|闺蜜|朋友|蜜月)/.test(text)) return { category: 'COMPANION', content: '通常以情侣或朋友结伴方式安排行程', confidence: 0.84 };
+    if (/(拍照|摄影|出片|机位|找角度|打卡地|美照|好看|旅拍|汉服)/.test(text)) return { category: 'INTEREST', content: '旅行时重视摄影出片与绝佳机位视角', confidence: 0.85 };
+    if (/(夜景|江景|两江|赛博朋克|魔幻|立交桥|索道|轻轨穿楼|citywalk|城市漫步|天台)/.test(text)) return { category: 'INTEREST', content: '喜欢山城夜景、魔幻8D与滨江漫步体验', confidence: 0.85 };
+    if (/(博物馆|美术馆|展览|人文|历史|古迹|老建筑|非遗|红色|文化|古镇|老街|文创|书店)/.test(text)) return { category: 'INTEREST', content: '偏爱人文历史与室内文化场馆', confidence: 0.87 };
+    if (/(自然|徒步|爬山|山水|公园|江岸|森林|峡谷|天坑|地质|吸氧)/.test(text)) return { category: 'INTEREST', content: '偏爱自然山水、高山峡谷与户外风光', confidence: 0.82 };
     return null;
   }
   function applyPatch(current, patch, replace = false) {
@@ -665,6 +674,20 @@ function createTestStub() {
       if (!attraction) throw new JavaCoreError(404, 'JAVA_REQUEST_REJECTED', '景点不存在。');
       return clone(attraction);
     },
+    async searchAmap(q, city = '重庆市') {
+      const query = String(q || '').toLowerCase();
+      return ATTRACTIONS_DATA
+        .filter((item) => !query || item.name.toLowerCase().includes(query) || item.district.toLowerCase().includes(query))
+        .map((item) => ({
+          poiId: item.id,
+          name: item.name,
+          coordinate: { longitude: 106.55, latitude: 29.56 },
+          address: item.district + ' · ' + (item.summary || item.name),
+          type: item.category || '风景名胜',
+          photoUrl: item.image || '',
+          photoTitle: item.name
+        }));
+    },
     async listTrips(token) {
       const user = userByToken(token);
       return [...formalTrips.values()].filter((trip) => trip.ownerId === user.userId).map(clone);
@@ -799,7 +822,7 @@ function createTestStub() {
     },
     async listTravelMemories(token) { return clone(memoriesFor(userByToken(token).userId)); },
     async suggestTravelMemory({ message = '' } = {}, token) {
-      userByToken(token);
+      if (token) try { userByToken(token); } catch {}
       return suggestMemoryCandidate(message);
     },
     async captureTravelMemoryObservation({ message = '', sessionId = '' } = {}, token) {
@@ -835,6 +858,18 @@ function createTestStub() {
       item.content = String(input.content || item.content); item.category = String(input.category || item.category); item.sourceType = 'USER_EDIT'; item.confidence = 1; item.updatedAt = Date.now(); return clone(item);
     },
     async deleteTravelMemory(id, token) { const user = userByToken(token); travelMemories.set(user.userId, memoriesFor(user.userId).filter((memory) => memory.id !== id)); return {}; },
+    async getPrependPrompt(token) {
+      const user = userByToken(token);
+      const prefs = ensurePreference(user.userId);
+      return { prependPrompt: prefs.legacyMetadata?.profilePrependPrompt || '【用户专属旅行偏好画像】暂无特殊偏好，按常规经典游玩。' };
+    },
+    async updatePrependPrompt(input = {}, token) {
+      const user = userByToken(token);
+      const prefs = ensurePreference(user.userId);
+      const prompt = String(input.prependPrompt || '');
+      applyPatch(prefs, { legacyMetadata: { ...(prefs.legacyMetadata || {}), profilePrependPrompt: prompt, userCustomizedPrompt: prompt } }, false);
+      return { prependPrompt: prompt };
+    },
     async refreshPlannerDynamicData(sessionId, { sessionAccessToken } = {}, token) {
       const session = plannerSessions.get(String(sessionId || ''));
       if (!session) throw new JavaCoreError(404, 'JAVA_REQUEST_REJECTED', '规划会话不存在或无权访问。');
@@ -1073,6 +1108,8 @@ function createHttpClient() {
     createTravelMemory: (input = {}, token, signal) => requestJava('/ai/memories', { method: 'POST', token, signal, body: input }),
     updateTravelMemory: (id, input = {}, token, signal) => requestJava(`/ai/memories/${encodeURIComponent(id)}`, { method: 'PATCH', token, signal, body: input }),
     deleteTravelMemory: (id, token, signal) => requestJava(`/ai/memories/${encodeURIComponent(id)}`, { method: 'DELETE', token, signal }),
+    getPrependPrompt: (token, signal) => requestJava('/ai/memories/prepend-prompt', { token, signal }),
+    updatePrependPrompt: (input = {}, token, signal) => requestJava('/ai/memories/prepend-prompt', { method: 'POST', token, signal, body: input }),
     chatStream: ({ message = '', sessionId = 'default', mode = 'normal', plannerSessionId = '', tripId = '', currentVersion = '', activeDay = '', activeStopId = '', activeStopName = '', planContext = '' } = {}, token, signal) => {
       const params = new URLSearchParams({
         message: String(message),
@@ -1100,17 +1137,27 @@ function createHttpClient() {
       headers: request.sessionAccessToken ? { 'x-plan-session-token': request.sessionAccessToken } : {},
       body: request
     }),
-    getPlannerSession: (sessionId, { token, sessionAccessToken, signal } = {}) => requestJava(`/ai/planner/v1/sessions/${encodeURIComponent(sessionId)}`, {
-      token,
-      signal,
-      headers: sessionAccessToken ? { 'x-plan-session-token': sessionAccessToken } : {}
-    }),
-    refreshPlannerDynamicData: (sessionId, { token, sessionAccessToken, signal } = {}) => requestJava(`/ai/planner/v1/sessions/${encodeURIComponent(sessionId)}/dynamic-refresh`, {
-      method: 'POST',
-      token,
-      signal,
-      headers: sessionAccessToken ? { 'x-plan-session-token': sessionAccessToken } : {}
-    }),
+    getPlannerSession: (sessionId, opts = {}, maybeToken) => {
+      const token = opts?.token || (typeof maybeToken === 'string' ? maybeToken : (typeof opts === 'string' ? opts : undefined));
+      const sessionAccessToken = opts?.sessionAccessToken;
+      const signal = opts?.signal;
+      return requestJava(`/ai/planner/v1/sessions/${encodeURIComponent(sessionId)}`, {
+        token,
+        signal,
+        headers: sessionAccessToken ? { 'x-plan-session-token': sessionAccessToken } : {}
+      });
+    },
+    refreshPlannerDynamicData: (sessionId, opts = {}, maybeToken) => {
+      const token = opts?.token || (typeof maybeToken === 'string' ? maybeToken : (typeof opts === 'string' ? opts : undefined));
+      const sessionAccessToken = opts?.sessionAccessToken;
+      const signal = opts?.signal;
+      return requestJava(`/ai/planner/v1/sessions/${encodeURIComponent(sessionId)}/dynamic-refresh`, {
+        method: 'POST',
+        token,
+        signal,
+        headers: sessionAccessToken ? { 'x-plan-session-token': sessionAccessToken } : {}
+      });
+    },
     openPlannerTrip: (tripId, token, signal) => requestJava(`/ai/planner/v1/trips/${encodeURIComponent(tripId)}/open`, {
       method: 'POST',
       token,
@@ -1193,6 +1240,8 @@ function createHttpClient() {
       return requestJava(`/ai/attractions${query ? `?${query}` : ''}`);
     },
     getAttraction: (attractionId) => requestJava(`/ai/attractions/${encodeURIComponent(attractionId)}`),
+    searchBaidu: (q, limit = 10) => requestJava(`/ai/search/baidu?q=${encodeURIComponent(q)}&limit=${limit}`),
+    searchAmap: (q, city = '重庆市', types = '') => requestJava(`/ai/search/amap?q=${encodeURIComponent(q)}&city=${encodeURIComponent(city)}${types ? `&types=${encodeURIComponent(types)}` : ''}`),
     listTrips: (token) => requestJava('/ai/trips', { token }),
     getTrip: (token, tripId) => requestJava(`/ai/trips/${encodeURIComponent(tripId)}`, { token }),
     createTrip: (token, request) => requestJava('/ai/trips', { method: 'POST', token, body: request }),

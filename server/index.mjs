@@ -294,7 +294,7 @@ function json(res, status, payload, { cookies = [] } = {}) {
   res.end(JSON.stringify(payload));
 }
 
-const CHAT_PROXY_TIMEOUT_MS = Math.max(1000, Number(process.env.YUYOUZHICE_JAVA_STREAM_TIMEOUT_MS || 65000));
+const CHAT_PROXY_TIMEOUT_MS = Math.max(1000, Number(process.env.YUYOUZHICE_JAVA_STREAM_TIMEOUT_MS || 120000));
 
 function writeChatSse(res, event, data) {
   if (res.destroyed || res.writableEnded) return false;
@@ -317,7 +317,7 @@ async function pipeChatStream(stream, res, requestSignal) {
   };
   requestSignal?.addEventListener('abort', abortForClient, { once: true });
 
-  const timer = setTimeout(() => {
+  let timer = setTimeout(() => {
     if (clientAborted || doneSeen || res.writableEnded || res.destroyed) return;
     timedOut = true;
     stream.abort?.();
@@ -327,14 +327,31 @@ async function pipeChatStream(stream, res, requestSignal) {
     readable.destroy?.();
   }, CHAT_PROXY_TIMEOUT_MS);
 
+  const resetTimer = () => {
+    if (timer) clearTimeout(timer);
+    if (!clientAborted && !doneSeen && !res.writableEnded && !res.destroyed) {
+      timer = setTimeout(() => {
+        if (clientAborted || doneSeen || res.writableEnded || res.destroyed) return;
+        timedOut = true;
+        stream.abort?.();
+        writeChatSse(res, 'error', 'BFF 对话流等待超时，请重新提问。');
+        writeChatSse(res, 'done', 'complete');
+        if (!res.writableEnded && !res.destroyed) res.end();
+        readable.destroy?.();
+      }, CHAT_PROXY_TIMEOUT_MS);
+    }
+  };
+
   try {
     for await (const chunk of readable) {
       if (clientAborted || res.destroyed || res.writableEnded) break;
+      resetTimer();
       const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       probe = (probe + text).slice(-256);
       if (/event:\s*done(?:\r?\n|$)/.test(probe)) doneSeen = true;
       if (!res.writableEnded && !res.destroyed) res.write(chunk);
       if (doneSeen) {
+        if (timer) clearTimeout(timer);
         if (!res.writableEnded && !res.destroyed) res.end();
         stream.abort?.();
         readable.destroy?.();
@@ -483,10 +500,21 @@ function legacyPreferencePatch(value, current = {}) {
   return { patch };
 }
 
+const guestSlotsStore = new Map();
+const guestPrependPromptStore = globalThis.__guestPrependPromptStore || (globalThis.__guestPrependPromptStore = new Map());
+
 function preferenceResponse(preferences, history = []) {
   const typed = preferences || {};
   const values = legacyPreferenceValues(typed);
-  return { preferences: values, formalPreferences: typed, history: Array.isArray(history) ? history : [] };
+  const diningSlots = Array.isArray(typed.legacyMetadata?.diningSlots) ? typed.legacyMetadata.diningSlots : [];
+  const attractionSlots = Array.isArray(typed.legacyMetadata?.attractionSlots) ? typed.legacyMetadata.attractionSlots : [];
+  return {
+    preferences: values,
+    formalPreferences: typed,
+    diningSlots,
+    attractionSlots,
+    history: Array.isArray(history) ? history : []
+  };
 }
 
 function recordLegacyPreferenceEvent(userId, event) {
@@ -718,17 +746,26 @@ async function multipartBody(req, maxBytes = 60 * 1024 * 1024) {
  */
 function planChatContext(session) {
   const constraints = session?.trip?.constraints;
-  if (!constraints || typeof constraints !== 'object' || Array.isArray(constraints)) return '';
+  const days = Array.isArray(session?.trip?.days) ? session.trip.days : [];
+  const currentStops = days.flatMap((day) => Array.isArray(day?.stops) ? day.stops : []).map((stop) => ({
+    name: String(stop?.name || '').trim(),
+    address: String(stop?.address || '').trim(),
+    duration: String(stop?.duration || '').trim(),
+    summary: String(stop?.summary || stop?.intro || '').trim(),
+    aiGuide: String(stop?.aiGuide || '').trim()
+  })).filter((s) => Boolean(s.name)).slice(0, 20);
+
   const compact = {
-    companions: String(constraints.companions || '').trim(),
-    walkingTolerance: String(constraints.walkingTolerance || '').trim(),
-    interests: Array.isArray(constraints.interests) ? constraints.interests.map((item) => String(item).trim()).filter(Boolean).slice(0, 12) : [],
-    transportPreference: String(constraints.transportPreference || '').trim(),
-    dietPreference: String(constraints.dietPreference || '').trim(),
-    stayArea: String(constraints.stayArea || '').trim(),
-    budget: constraints.budget && typeof constraints.budget === 'object' ? constraints.budget : null
+    companions: String(constraints?.companions || '').trim(),
+    walkingTolerance: String(constraints?.walkingTolerance || '').trim(),
+    interests: Array.isArray(constraints?.interests) ? constraints.interests.map((item) => String(item).trim()).filter(Boolean).slice(0, 12) : [],
+    transportPreference: String(constraints?.transportPreference || '').trim(),
+    dietPreference: String(constraints?.dietPreference || '').trim(),
+    stayArea: String(constraints?.stayArea || '').trim(),
+    budget: constraints?.budget && typeof constraints.budget === 'object' ? constraints.budget : null,
+    currentStops
   };
-  return JSON.stringify(compact).slice(0, 1800);
+  return JSON.stringify(compact).slice(0, 3600);
 }
 
 // A formal Trip has its own working memory. It is deliberately distinct from
@@ -913,7 +950,7 @@ function plannerConversationRequest(input = {}, session, targetSessionId) {
   // “改一下景点”后的“洪崖洞”是上一轮澄清问题的答案，不是新的孤立指令。
   // 当没有页面选中站点时，恢复这份未完成上下文并把简短景点名补成可执行的替换候选请求。
   if (!selectedStopId
-      && /^(REPLACE_STOP|SUGGEST_REPLACEMENTS)$/i.test(pendingOperation)
+      && /^(REPLACE_STOP|SUGGEST_REPLACEMENTS|REPLAN_DAY)$/i.test(pendingOperation)
       && isBriefPlannerFollowUp(message)) {
     const matchedStop = plannerStopFromReference(session?.trip, message);
     if (matchedStop?.id && matchedStop?.name) {
@@ -959,13 +996,17 @@ async function createSession(input = '', {
   constraints: overrides = {},
   candidateUsePreferences = false,
   preferenceDecision = '',
+  profilePrependPrompt = '',
   javaToken = '',
   userId = null,
   deviceId = null,
   signal
 } = {}) {
   const id = `session-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const prompt = String(input || '');
+  let prompt = String(input || '');
+  if (candidateUsePreferences && profilePrependPrompt && !prompt.includes(profilePrependPrompt)) {
+    prompt = `${profilePrependPrompt}\n${prompt}`;
+  }
 
   // Java owns prompt interpretation, candidate calculation, route data, and
   // quality/source metadata. Node only records the transient observation.
@@ -1563,11 +1604,12 @@ async function api(req, res, url, requestSignal) {
   if (req.method === 'POST' && url.pathname === '/api/plan') {
     const input = await body(req);
     const user = await authUser(req);
+    const promptText = String(input.prompt || input.message || '').trim();
     console.info('[BFF][planner-create]', JSON.stringify({
       authenticated: Boolean(user),
       role: user?.javaRole || user?.role || 'ANONYMOUS',
       hasUserId: Boolean(user?.id),
-      promptLength: String(input.prompt || '').trim().length,
+      promptLength: promptText.length,
       usePreferences: Boolean(input.usePreferences)
     }));
     let typedPreferences = null;
@@ -1581,10 +1623,12 @@ async function api(req, res, url, requestSignal) {
     const storedPreferences = typedPreferences ? legacyPreferenceValues(typedPreferences) : [];
     let session;
     try {
-      session = await createSession(String(input.prompt || ''), {
+      const guestPrompt = guestPrependPromptStore.get(req.webSession?.id || req.headers?.['x-session-id'] || 'guest') || '';
+      session = await createSession(promptText, {
         constraints: input.constraints || {},
         candidateUsePreferences: Boolean(input.usePreferences),
         preferenceDecision: String(input.preferenceDecision || ''),
+        profilePrependPrompt: typedPreferences?.legacyMetadata?.profilePrependPrompt || guestPrompt,
         javaToken: javaTokenFor(req),
         userId: user?.id || null,
         deviceId: requestDeviceId(req),
@@ -1626,7 +1670,7 @@ async function api(req, res, url, requestSignal) {
     if (!session) return json(res, 404, { ok: false, code: 'PLANNER_SESSION_NOT_FOUND', recoverable: true, message: '规划会话已失效或无法恢复，请重新生成行程或重新打开已保存行程。' });
     const capability = plannerCapability(session);
     if (capability.legacyMode) return json(res, 200, legacyAdjustmentResponse(sessionId, 'conversation'));
-    const targetSessionId = String(session.javaSessionId);
+    const targetSessionId = String(session?.javaSessionId || session?.sessionId || session?.id || sessionId).trim();
     console.info('[BFF][planner-route]', JSON.stringify({
       channel: 'planner-conversation',
       messageLength: String(input.message || '').trim().length,
@@ -1672,7 +1716,7 @@ async function api(req, res, url, requestSignal) {
     if (!session) return json(res, 404, { ok: false, code: 'PLANNER_SESSION_NOT_FOUND', recoverable: true, message: '规划会话已失效或无法恢复，请重新生成行程或重新打开已保存行程。' });
     const capability = plannerCapability(session);
     if (capability.legacyMode) return json(res, 200, legacyAdjustmentResponse(sessionId, 'preview'));
-    const targetSessionId = String(session.javaSessionId);
+    const targetSessionId = String(session?.javaSessionId || session?.sessionId || session?.id || sessionId).trim();
     try {
       const previewResult = await javaCore.previewAdjustment(targetSessionId, plannerConversationRequest(input, session, targetSessionId), javaTokenFor(req));
       return json(res, 200, { ...previewResult, ...capability, sessionId });
@@ -1685,19 +1729,20 @@ async function api(req, res, url, requestSignal) {
     }
   }
   if (req.method === 'POST' && url.pathname === '/api/planner/adjust/apply') {
-    if (!sessionForRequest(req)
-      && process.env.YUYOUZHICE_TEST_FIXTURES !== '1'
-      && process.env.YUYOUZHICE_TEST_SESSION_COMPAT !== '1') {
-      return json(res, 401, { ok: false, code: 'AUTH_UNAUTHENTICATED', message: '请先登录后确认应用行程调整。' });
-    }
     const input = await body(req);
     const sessionId = String(input.sessionId || input.planId || '').trim();
     if (!sessionId) return json(res, 400, { ok: false, message: '缺少 sessionId' });
     const session = await restorePlannerSession(sessionId, req);
     if (!session) return json(res, 404, { ok: false, code: 'PLANNER_SESSION_NOT_FOUND', recoverable: true, message: '规划会话已失效或无法恢复，请重新生成行程或重新打开已保存行程。' });
+    const hasAuth = Boolean(sessionForRequest(req)) || Boolean(session?.sessionAccessToken) || Boolean(input.sessionAccessToken);
+    if (!hasAuth
+      && process.env.YUYOUZHICE_TEST_FIXTURES !== '1'
+      && process.env.YUYOUZHICE_TEST_SESSION_COMPAT !== '1') {
+      return json(res, 401, { ok: false, code: 'AUTH_UNAUTHENTICATED', message: '请先登录后确认应用行程调整。' });
+    }
     const capability = plannerCapability(session);
     if (capability.legacyMode) return json(res, 200, legacyAdjustmentResponse(sessionId, 'apply'));
-    const targetSessionId = String(session.javaSessionId);
+    const targetSessionId = String(session?.javaSessionId || session?.sessionId || session?.id || sessionId).trim();
     const applyRequest = plannerApplyRequest(input, session);
     try {
       const applyResult = await javaCore.applyAdjustment(targetSessionId, applyRequest, javaTokenFor(req));
@@ -1735,7 +1780,7 @@ async function api(req, res, url, requestSignal) {
     const targetSessionId = session?.javaSessionId || id;
     const sessionAccessToken = req.headers['x-plan-session-token'] || session?.sessionAccessToken || '';
     try {
-      const sessionResult = await javaCore.getPlannerSession(targetSessionId, { sessionAccessToken }, javaTokenFor(req));
+      const sessionResult = await javaCore.getPlannerSession(targetSessionId, { sessionAccessToken, token: javaTokenFor(req) }, javaTokenFor(req));
       return json(res, 200, { ...sessionResult, activeProposal: clone(session.chatProposal) });
     } catch (error) {
       return javaErrorResponse(res, error, '获取规划会话失败。');
@@ -1748,7 +1793,7 @@ async function api(req, res, url, requestSignal) {
     const targetSessionId = session?.javaSessionId || id;
     const sessionAccessToken = req.headers['x-plan-session-token'] || session?.sessionAccessToken || '';
     try {
-      const refreshed = await javaCore.refreshPlannerDynamicData(targetSessionId, { sessionAccessToken }, javaTokenFor(req));
+      const refreshed = await javaCore.refreshPlannerDynamicData(targetSessionId, { sessionAccessToken, token: javaTokenFor(req) }, javaTokenFor(req));
       if (refreshed?.trip) {
         session.trip = clone(refreshed.trip);
         session.candidateSource = clone(refreshed.source || refreshed.trip.sourceStatus || session.candidateSource);
@@ -1780,6 +1825,156 @@ async function api(req, res, url, requestSignal) {
       });
     } catch (error) {
       return javaErrorResponse(res, error, '无法读取 Java Core Backend 景点目录。');
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/search/baidu') {
+    const query = String(url.searchParams.get('q') || '').trim();
+    const limit = Number(url.searchParams.get('limit') || 10);
+    if (!query) {
+      return json(res, 200, { ok: true, query: '', results: [] });
+    }
+    try {
+      const result = await javaCore.searchBaidu(query, limit);
+      const results = Array.isArray(result) ? result : (Array.isArray(result?.data) ? result.data : []);
+      return json(res, 200, { ok: true, query, results });
+    } catch (error) {
+      return json(res, 200, {
+        ok: true,
+        query,
+        results: [
+          {
+            title: `在百度中搜索“${query}”的文旅与美食攻略`,
+            snippet: `点击前往百度搜索，实时查看【${query}】的最新大众点评、游玩攻略、营业动态与特色风味推荐。`,
+            url: `https://www.baidu.com/s?wd=${encodeURIComponent('重庆 ' + query)}`,
+            source: '百度全网搜索直达',
+            category: '全网资讯',
+            thumbnail: 'https://www.baidu.com/favicon.ico'
+          }
+        ]
+      });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/search/amap') {
+    const query = String(url.searchParams.get('q') || '').trim();
+    const city = String(url.searchParams.get('city') || '重庆市').trim();
+    const category = String(url.searchParams.get('category') || '').trim();
+    let types = String(url.searchParams.get('types') || '').trim();
+    if (!query) {
+      return json(res, 200, { ok: true, query: '', results: [] });
+    }
+    const categoryConfigs = {
+      '自然': {
+        types: '110200|110202|110207|110100|110101|110103',
+        keywordAppend: '自然风景',
+        hasCategorySignal: (q) => /(?:自然|山|森林|峡谷|瀑布|公园|湖|洞|湿地|奇观|地质)/.test(q),
+        displayCategory: '自然奇观',
+        defaultTag: '自然风光'
+      },
+      '人文': {
+        types: '110300|110205|140100|140200|110400|110201|110203',
+        keywordAppend: '文博古迹',
+        hasCategorySignal: (q) => /(?:古镇|历史|文化|遗址|古迹|文博|博物|寺|庙|祠|老街|故居)/.test(q),
+        displayCategory: '人文历史',
+        defaultTag: '文博古迹'
+      },
+      '夜景': {
+        types: '110200|110100|080200',
+        keywordAppend: '夜景 观景台',
+        hasCategorySignal: (q) => /(?:夜景|江景|观景台|天台|夜市|灯光|两江)/.test(q),
+        displayCategory: '山城夜景',
+        defaultTag: '夜景打卡'
+      },
+      '城市': {
+        types: '110000|110100|110200|080200',
+        keywordAppend: '地标',
+        hasCategorySignal: (q) => /(?:地标|中心|广场|步行街|商圈|索道|轻轨|大桥)/.test(q),
+        displayCategory: '城市风貌',
+        defaultTag: '城市地标'
+      },
+      '美食': {
+        types: '050000|050100|050200|050300|050400',
+        keywordAppend: '特色美食',
+        hasCategorySignal: (q) => /(?:美食|餐|火锅|吃|菜|馆|串串|鱼|兔|面|小吃|烧烤|酒楼|茶馆|老字号)/.test(q),
+        displayCategory: '地道美食',
+        defaultTag: '特色美食'
+      },
+      '文创': {
+        types: '140400|140200|140600|110208|110300',
+        keywordAppend: '文创艺术',
+        hasCategorySignal: (q) => /(?:文创|艺术|美术|创客|文旅|集市|手作)/.test(q),
+        displayCategory: '文创街区',
+        defaultTag: '文创艺术'
+      },
+      '休闲': {
+        types: '080200|080400|050400|110100',
+        keywordAppend: '休闲度假',
+        hasCategorySignal: (q) => /(?:休闲|度假|温泉|农家乐|茶舍|茶馆|咖啡|露营|采摘)/.test(q),
+        displayCategory: '休闲慢生活',
+        defaultTag: '休闲慢生活'
+      }
+    };
+
+    const currentConfig = categoryConfigs[category];
+    if (!types) {
+      if (currentConfig) {
+        types = currentConfig.types;
+      } else if (category === '全部' || !category) {
+        types = '110000|050000|080000|140000';
+      } else {
+        types = '110000';
+      }
+    }
+    try {
+      let searchQuery = query;
+      if (currentConfig && !currentConfig.hasCategorySignal(query)) {
+        searchQuery = `${query} ${currentConfig.keywordAppend}`;
+      }
+      let result = await javaCore.searchAmap(searchQuery, city, types);
+      let rawList = Array.isArray(result) ? result : (Array.isArray(result?.data) ? result.data : []);
+      if (rawList.length === 0 && searchQuery !== query) {
+        result = await javaCore.searchAmap(query, city, types);
+        rawList = Array.isArray(result) ? result : (Array.isArray(result?.data) ? result.data : []);
+      }
+      if (rawList.length === 0 && types) {
+        result = await javaCore.searchAmap(query, city, '');
+        rawList = Array.isArray(result) ? result : (Array.isArray(result?.data) ? result.data : []);
+      }
+      const isClutter = (poi) => {
+        const text = `${poi.name || ''} ${poi.address || ''} ${poi.type || ''}`;
+        return /(?:火车站|客运站|客运中心|汽车客运|长途汽车站|地铁站|轻轨站|公交站|公交枢纽|飞机场|航站楼|交通设施服务|地名地址信息|政府机构及社会团体|行政地标|汽车销售|汽车维修|摩托车|驾校)/.test(text);
+      };
+      const filteredList = rawList.filter((poi) => !isClutter(poi));
+      const results = filteredList.map((poi) => {
+        const isDining = /(?:餐饮|美食|中餐厅|餐馆|火锅|江湖菜|小吃|烧烤|串串|酒楼|茶馆|咖啡|老字号)/.test(poi.type || '')
+          || category === '美食';
+        const displayCategory = currentConfig ? currentConfig.displayCategory : (isDining ? '美食' : (poi.type?.split(';')[0] || '文旅地标'));
+        const defaultTag = currentConfig ? currentConfig.defaultTag : (isDining ? '特色美食' : poi.type?.split(';')[0]);
+        return {
+          id: `amap-${poi.poiId || poi.id}`,
+          poiId: poi.poiId || poi.id,
+          name: poi.name || '未知地点',
+          displayName: poi.name || '未知地点',
+          address: poi.address || '重庆市',
+          district: poi.address?.match(/(渝中区|江北区|南岸区|沙坪坝区|九龙坡区|大渡口区|渝北区|巴南区|北碚区|江津区|大足区|武隆区|永川区|合川区|璧山区|铜梁区|潼南区|荣昌区|开州区|梁平区|城口县|丰都县|垫江县|忠县|云阳县|奉节县|巫山县|巫溪县|石柱|秀山|酉阳|彭水)/)?.[0] || '重庆全域',
+          category: displayCategory,
+          type: poi.type || (isDining ? '餐饮服务' : '风景名胜'),
+          isDining,
+          photoUrl: poi.photoUrl || '',
+          image: poi.photoUrl || '',
+          photoTitle: poi.photoTitle || poi.name || '',
+          location: poi.coordinate ? `${poi.coordinate.longitude},${poi.coordinate.latitude}` : '',
+          coordinate: poi.coordinate || null,
+          ticket: isDining ? '人均消费以到店为准' : '以现场公告为准',
+          summary: poi.address || poi.type || (isDining ? '高德特色地道餐饮' : '高德地图实时检索地标'),
+          fit: isDining ? '适合品味地道风味、聚餐打卡，支持一键安排为行程就餐' : '高德全城实时检索地点，支持加入行程规划或直接导航',
+          tags: [defaultTag, poi.type?.split(';')[0], '高德实景'].filter(Boolean),
+          source: 'AMAP_WEB_SERVICE'
+        };
+      });
+      return json(res, 200, { ok: true, query, city, total: results.length, results });
+    } catch (error) {
+      void writeBffDiagnostic('amap-search-error', diagnosticError(error));
+      return json(res, 200, { ok: false, query, results: [], message: error?.message || '高德检索服务暂时不可用' });
     }
   }
   if (req.method === 'GET' && url.pathname === '/api/history') {
@@ -2034,10 +2229,16 @@ async function api(req, res, url, requestSignal) {
       auth = authSessionFromResult(await javaCore.login({ username: email, password: String(input.password) }));
     } catch (error) {
       if (error instanceof JavaCoreError) {
+        const errorReason = (error.message && !error.message.includes('Java Core Backend'))
+          ? error.message
+          : '用户名或密码错误';
+        const helpfulHint = errorReason.includes('不存在')
+          ? `${errorReason}，若尚未注册请先切换到右上角【注册账号】。`
+          : `${errorReason}。`;
         return json(res, error.status || 401, {
           ok: false,
           code: error.code,
-          message: `${safeJavaErrorMessage(error, '登录失败。')} 草稿仍保留在当前页面。`
+          message: `${helpfulHint} 草稿仍保留在当前页面。`
         });
       }
       throw error;
@@ -2297,8 +2498,6 @@ async function api(req, res, url, requestSignal) {
     catch (error) { return javaErrorResponse(res, error, '无法读取旅行记忆。'); }
   }
   if (req.method === 'POST' && url.pathname === '/api/memories/candidate') {
-    const user = await authUser(req);
-    if (!user) return json(res, 401, { ok: false, message: '登录后才能使用旅行记忆。' });
     const input = await body(req);
     try {
       return json(res, 200, { ok: true, candidate: await javaCore.suggestTravelMemory({ message: String(input.message || '') }, javaTokenFor(req)) });
@@ -2307,7 +2506,7 @@ async function api(req, res, url, requestSignal) {
   }
   if (req.method === 'POST' && url.pathname === '/api/memories/observe') {
     const user = await authUser(req);
-    if (!user) return json(res, 401, { ok: false, message: '登录后才能整理旅行记忆。' });
+    if (!user) return json(res, 200, { ok: true, message: '访客会话跳过持久记忆整理。' });
     const input = await body(req);
     try {
       await javaCore.captureTravelMemoryObservation({ message: String(input.message || ''), sessionId: String(input.sessionId || '') }, javaTokenFor(req));
@@ -2388,20 +2587,221 @@ async function api(req, res, url, requestSignal) {
       return javaErrorResponse(res, error, '偏好移除失败。');
     }
   }
+
+  if (req.method === 'GET' && url.pathname === '/api/preferences/prepend-prompt') {
+    const user = await authUser(req);
+    if (!user) {
+      const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+      const prompt = guestPrependPromptStore.get(sessionId) || '';
+      return json(res, 200, { ok: true, prependPrompt: prompt, enabled: true });
+    }
+    try {
+      const typedPreferences = await javaCore.getPreferences(javaTokenFor(req));
+      let prompt = typedPreferences?.legacyMetadata?.profilePrependPrompt;
+      if (!prompt) {
+        try {
+          const resJava = await javaCore.getPrependPrompt(javaTokenFor(req));
+          prompt = resJava?.data?.prependPrompt || resJava?.prependPrompt || '';
+        } catch {}
+      }
+      return json(res, 200, {
+        ok: true,
+        prependPrompt: prompt || '',
+        userCustomizedPrompt: typedPreferences?.legacyMetadata?.userCustomizedPrompt || '',
+        enabled: typedPreferences?.legacyMetadata?.travelMemoryEnabled !== false
+      });
+    } catch (error) {
+      return javaErrorResponse(res, error, '无法读取旅行偏好提示词。');
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/preferences/prepend-prompt') {
+    const user = await authUser(req);
+    const input = await body(req);
+    const action = String(input.action || 'save');
+    const customText = String(input.prependPrompt || input.userCustomizedPrompt || '').trim();
+
+    if (!user) {
+      const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+      guestPrependPromptStore.set(sessionId, customText);
+      return json(res, 200, { ok: true, prependPrompt: customText, message: '偏好提示词已保存。' });
+    }
+
+    try {
+      let updatedPrompt = customText;
+      if (action === 'resynthesize') {
+        const resJava = await javaCore.updatePrependPrompt({ action: 'resynthesize' }, javaTokenFor(req));
+        updatedPrompt = resJava?.data?.prependPrompt || resJava?.prependPrompt || '';
+      } else {
+        const resJava = await javaCore.updatePrependPrompt({ prependPrompt: customText }, javaTokenFor(req));
+        updatedPrompt = resJava?.data?.prependPrompt || resJava?.prependPrompt || customText;
+      }
+      return json(res, 200, {
+        ok: true,
+        prependPrompt: updatedPrompt,
+        message: action === 'resynthesize' ? '前置提示词已重新生成。' : '前置提示词已保存。'
+      });
+    } catch (error) {
+      return javaErrorResponse(res, error, '保存偏好提示词失败。');
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/preferences/slots') {
+    const user = await authUser(req);
+    if (!user) {
+      const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+      const guestSlots = guestSlotsStore.get(sessionId) || { diningSlots: [], attractionSlots: [] };
+      return json(res, 200, { ok: true, diningSlots: guestSlots.diningSlots || [], attractionSlots: guestSlots.attractionSlots || [] });
+    }
+    try {
+      const current = await javaCore.getPreferences(javaTokenFor(req));
+      const diningSlots = Array.isArray(current?.legacyMetadata?.diningSlots) ? current.legacyMetadata.diningSlots : [];
+      const attractionSlots = Array.isArray(current?.legacyMetadata?.attractionSlots) ? current.legacyMetadata.attractionSlots : [];
+      return json(res, 200, { ok: true, diningSlots, attractionSlots });
+    } catch (error) {
+      return javaErrorResponse(res, error, '无法读取偏好槽位。');
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/preferences/slots') {
+    const user = await authUser(req);
+    const input = await body(req);
+    const slot = String(input.slot || '').trim();
+    const tag = String(input.tag || '').trim();
+    const action = String(input.action || 'add').trim();
+    if (!['dining', 'attraction'].includes(slot)) {
+      return json(res, 400, { ok: false, message: '无效的偏好槽位类型。' });
+    }
+    if (!tag) {
+      return json(res, 400, { ok: false, message: '标签内容不能为空。' });
+    }
+    if (tag.length > 20) {
+      return json(res, 400, { ok: false, message: '标签长度不能超过20字。' });
+    }
+
+    if (!user) {
+      const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+      if (!guestSlotsStore.has(sessionId)) guestSlotsStore.set(sessionId, { diningSlots: [], attractionSlots: [] });
+      const guestSlots = guestSlotsStore.get(sessionId);
+      const key = slot === 'dining' ? 'diningSlots' : 'attractionSlots';
+      let list = [...(guestSlots[key] || [])];
+      if (action === 'add') {
+        if (!list.includes(tag)) list.push(tag);
+      } else {
+        list = list.filter((t) => t !== tag);
+      }
+      guestSlots[key] = list;
+      return json(res, 200, {
+        ok: true,
+        diningSlots: guestSlots.diningSlots || [],
+        attractionSlots: guestSlots.attractionSlots || [],
+        message: action === 'add' ? `已将【${tag}】加入偏好槽位。` : `已移除【${tag}】。`
+      });
+    }
+
+    try {
+      const current = await javaCore.getPreferences(javaTokenFor(req));
+      const currentMeta = { ...(current.legacyMetadata || {}) };
+      const currentDining = Array.isArray(currentMeta.diningSlots) ? [...currentMeta.diningSlots] : [];
+      const currentAttraction = Array.isArray(currentMeta.attractionSlots) ? [...currentMeta.attractionSlots] : [];
+
+      if (slot === 'dining') {
+        if (action === 'add') {
+          if (!currentDining.includes(tag)) currentDining.push(tag);
+        } else {
+          const idx = currentDining.indexOf(tag);
+          if (idx !== -1) currentDining.splice(idx, 1);
+        }
+        currentMeta.diningSlots = currentDining;
+      } else {
+        if (action === 'add') {
+          if (!currentAttraction.includes(tag)) currentAttraction.push(tag);
+        } else {
+          const idx = currentAttraction.indexOf(tag);
+          if (idx !== -1) currentAttraction.splice(idx, 1);
+        }
+        currentMeta.attractionSlots = currentAttraction;
+      }
+
+      const updated = await javaCore.replacePreferences(javaTokenFor(req), {
+        ...current,
+        legacyMetadata: currentMeta
+      }, current.revision);
+
+      const history = recordLegacyPreferenceEvent(user.id, { value: `${slot === 'dining' ? '美食偏好' : '景点偏好'}：${tag}`, action: action === 'add' ? 'added' : 'removed' });
+      return json(res, 200, {
+        ok: true,
+        ...preferenceResponse(updated, history),
+        diningSlots: currentDining,
+        attractionSlots: currentAttraction,
+        message: action === 'add' ? `已将【${tag}】加入${slot === 'dining' ? '美食' : '景点'}偏好！` : `已移除【${tag}】。`
+      });
+    } catch (error) {
+      return javaErrorResponse(res, error, '槽位偏好保存失败。');
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/planner/context') {
+    const user = await authUser(req);
+    const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+    if (!user) {
+      return json(res, 200, {
+        ok: true,
+        preferences: [],
+        memories: [],
+        diningSlots: [],
+        attractionSlots: [],
+        profilePrependPrompt: guestPrependPromptStore.get(sessionId) || '',
+        memoryEnabled: false
+      });
+    }
+    try {
+      const typedPreferences = await javaCore.getPreferences(javaTokenFor(req));
+      const allMemories = await javaCore.listTravelMemories(javaTokenFor(req));
+      // 7天滚动过滤：右侧近期记忆流只返回 7 天内的记录
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const recentMemories = (Array.isArray(allMemories) ? allMemories : []).filter((m) => {
+        const ts = Number(m.createdAt || m.created_at || m.updatedAt || m.updated_at || 0);
+        return ts === 0 || ts >= sevenDaysAgo;
+      });
+      return json(res, 200, {
+        ok: true,
+        preferences: typedPreferences?.preferences || [],
+        diningSlots: Array.isArray(typedPreferences?.legacyMetadata?.diningSlots) ? typedPreferences.legacyMetadata.diningSlots : [],
+        attractionSlots: Array.isArray(typedPreferences?.legacyMetadata?.attractionSlots) ? typedPreferences.legacyMetadata.attractionSlots : [],
+        profilePrependPrompt: typedPreferences?.legacyMetadata?.profilePrependPrompt || '',
+        userCustomizedPrompt: typedPreferences?.legacyMetadata?.userCustomizedPrompt || '',
+        memories: recentMemories,
+        memoryEnabled: typedPreferences?.legacyMetadata?.travelMemoryEnabled !== false
+      });
+    } catch {
+      return json(res, 200, { ok: true, preferences: [], memories: [], diningSlots: [], attractionSlots: [], profilePrependPrompt: '', memoryEnabled: false });
+    }
+  }
   if (req.method === 'GET' && url.pathname === '/api/profile') {
     const user = await authUser(req);
     if (!user) return json(res, 401, { ok: false, message: '登录后才能查看旅行档案。' });
     try {
       const typedPreferences = await javaCore.getPreferences(javaTokenFor(req));
-      const memories = await javaCore.listTravelMemories(javaTokenFor(req));
+      const allMemories = await javaCore.listTravelMemories(javaTokenFor(req));
       const memoryCandidates = await javaCore.listTravelMemoryCandidates(javaTokenFor(req));
       const formalTrips = await javaCore.listTrips(javaTokenFor(req));
       const savedTrips = (Array.isArray(formalTrips) ? formalTrips : []).map((trip) => savedTripProjection(trip));
+
+      // 7天滚动过滤：右侧近期记忆流只返回 7 天内的记录
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const recentMemories = (Array.isArray(allMemories) ? allMemories : []).filter((m) => {
+        const ts = Number(m.createdAt || m.created_at || m.updatedAt || m.updated_at || 0);
+        return ts === 0 || ts >= sevenDaysAgo;
+      });
+
       return json(res, 200, {
         ok: true,
         user,
         ...preferenceResponse(typedPreferences, legacyPreferenceEvents.get(user.id) || []),
-        memories,
+        diningSlots: Array.isArray(typedPreferences?.legacyMetadata?.diningSlots) ? typedPreferences.legacyMetadata.diningSlots : [],
+        attractionSlots: Array.isArray(typedPreferences?.legacyMetadata?.attractionSlots) ? typedPreferences.legacyMetadata.attractionSlots : [],
+        profilePrependPrompt: typedPreferences?.legacyMetadata?.profilePrependPrompt || '',
+        userCustomizedPrompt: typedPreferences?.legacyMetadata?.userCustomizedPrompt || '',
+        memories: recentMemories,
         memoryCandidates,
         memoryEnabled: typedPreferences?.legacyMetadata?.travelMemoryEnabled === true,
         memoryLastReviewAt: Number(typedPreferences?.legacyMetadata?.travelMemoryLastReviewAt || 0) || null,

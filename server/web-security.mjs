@@ -7,13 +7,16 @@ const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 function configuredOrigins() {
   const raw = String(process.env.YUYOUZHICE_WEB_ORIGINS || '').trim();
-  if (raw) return new Set(raw.split(',').map((item) => item.trim()).filter(Boolean));
+  const configured = raw ? raw.split(',').map((item) => item.trim()).filter(Boolean) : [];
   const port = String(process.env.PORT || '3000');
   return new Set([
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
     `https://localhost:${port}`,
-    `https://127.0.0.1:${port}`
+    `https://127.0.0.1:${port}`,
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    ...configured
   ]);
 }
 
