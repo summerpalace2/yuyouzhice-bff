@@ -1017,7 +1017,7 @@ async function createSession(input = '', {
   try {
     candidate = await javaCore.createPlannerPlan({
       prompt,
-      freeText: prompt,
+      freeText: String(input || prompt),
       constraints: overrides || {},
       usePreferences: Boolean(candidateUsePreferences),
       preferenceDecision: String(preferenceDecision || '')
