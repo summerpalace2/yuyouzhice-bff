@@ -1,3 +1,4 @@
+import { readPreferencesWithCurrentProjection } from './memory-projection-refresh.mjs';
 /**
  * java-core-client.mjs
  *
@@ -85,6 +86,8 @@ function plannerConversationBody(request = {}) {
     activeDay: Number(sourceContext.activeDay ?? request.activeDay ?? 1),
     selectedStopId: sourceContext.selectedStopId ?? request.selectedStopId ?? null,
     activeProposalId: sourceContext.activeProposalId ?? request.activeProposalId ?? null,
+    pendingIntentId: sourceContext.pendingIntentId == null ? null : String(sourceContext.pendingIntentId),
+    resetConversation: sourceContext.resetConversation === true,
     pinnedStopIds: Array.isArray(sourceContext.pinnedStopIds)
       ? sourceContext.pinnedStopIds.map((id) => String(id)).filter(Boolean)
       : (Array.isArray(request.pinnedStopIds) ? request.pinnedStopIds.map((id) => String(id)).filter(Boolean) : [])
@@ -230,12 +233,14 @@ async function requestJavaStream(path, options = {}) {
     let response;
     try {
       response = await fetch(`${JAVA_CORE_URL}${path}`, {
-        method: 'GET',
+        method: options.method || 'GET',
         headers: {
           accept: 'text/event-stream',
+          ...(options.body ? { 'content-type': 'application/json' } : {}),
           ...(token ? { authorization: `Bearer ${token}` } : {})
         },
-        signal: controller.signal
+        signal: controller.signal,
+        ...(options.body ? { body: JSON.stringify(options.body) } : {})
       });
     } catch (error) {
       cleanup();
@@ -1095,11 +1100,28 @@ function createHttpClient() {
     login: ({ username, password }) => requestJava('/ai/auth/login', { method: 'POST', body: { username, password } }).then(authResult),
     logout: (token) => requestJava('/ai/auth/logout', { method: 'POST', token }),
     me: (token) => requestJava('/ai/auth/me', { token }).then(normalizeJavaPrincipal),
-    getPreferences: (token, signal) => requestJava('/ai/preferences', { token, signal }),
+    getPreferences: (token, signal) => readPreferencesWithCurrentProjection(requestJava, token, signal),
     mergePreferences: (token, patch, expectedRevision) => requestJava('/ai/preferences', { method: 'POST', token, body: { ...patch, expectedRevision } }),
     replacePreferences: (token, patch, expectedRevision) => requestJava('/ai/preferences', { method: 'PUT', token, body: { ...patch, expectedRevision } }),
     clearPreferences: (token, expectedRevision) => requestJava('/ai/preferences', { method: 'DELETE', token, body: { expectedRevision } }),
-    listTravelMemories: (token, signal) => requestJava('/ai/memories', { token, signal }),
+    async listTravelMemories(token, signal) {
+      const memories = [], ids = new Set();
+      const limit = 100;
+      for (let offset = 0; ; offset += limit) {
+        const page = await requestJava(`/ai/memories?limit=${limit}&offset=${offset}`, { token, signal });
+        if (!Array.isArray(page) || page.length > limit) {
+          throw new JavaCoreError(502, 'MEMORY_PAGE_INVALID', '旅行记忆分页响应无效，请刷新后重试。');
+        }
+        for (const memory of page) {
+          const id = String(memory?.id || '');
+          if (!id || ids.has(id)) {
+            throw new JavaCoreError(409, 'MEMORY_PAGE_CHANGED', '旅行记忆在读取时发生变化，请刷新后重试。');
+          }
+          ids.add(id); memories.push(memory);
+        }
+        if (page.length < limit) return memories;
+      }
+    },
     captureTravelMemoryObservation: (input = {}, token, signal) => requestJava('/ai/memories/observations', { method: 'POST', token, signal, body: input }),
     listTravelMemoryCandidates: (token, signal) => requestJava('/ai/memories/candidates', { token, signal }),
     confirmTravelMemoryCandidate: (id, token, signal) => requestJava(`/ai/memories/candidates/${encodeURIComponent(id)}/confirm`, { method: 'POST', token, signal }),
@@ -1123,7 +1145,7 @@ function createHttpClient() {
         activeStopName: String(activeStopName || ''),
         planContext: String(planContext || '')
       });
-      return requestJavaStream(`/ai/chat/stream?${params.toString()}`, { token, signal });
+      return requestJavaStream('/ai/chat/stream', { token, signal, method: 'POST', body: Object.fromEntries(params) });
     },
     ragRetrieve: ({ query, city = '重庆', constraints = {}, deep = false, signal } = {}, token) => requestJava('/ai/rag/retrieve', { method: 'POST', token, signal, body: { query, city, constraints, deep } }),
     ragStats: (token) => requestJava('/ai/rag/stats', { token }),

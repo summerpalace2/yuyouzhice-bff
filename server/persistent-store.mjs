@@ -147,13 +147,21 @@ export async function createPersistentStore({ rootDir, filePath, enabled = true 
       const value = tripWorkspaces.get(`${owner}:${tripId}`);
       return value ? structuredClone(value) : null;
     },
-    saveTripWorkspace({ userId, formalTripId, workspace } = {}) {
+    saveTripWorkspace({ userId, formalTripId, workspace, expectedRevision, expectedEpoch, reset = false } = {}) {
       const owner = String(userId || '').trim();
       const tripId = String(formalTripId || '').trim();
       if (!owner || !tripId) return Promise.resolve(null);
       const source = workspace && typeof workspace === 'object' ? workspace : {};
       const previous = tripWorkspaces.get(`${owner}:${tripId}`) || {};
-      const messages = Array.isArray(source.chatMessages)
+      const revision = Number(previous.workspaceRevision || 0);
+      if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision)
+          || expectedRevision !== revision || !expectedEpoch || expectedEpoch !== previous.chatEpoch)) {
+        const error = new Error('对话工作区已更新，请重新打开行程后再保存。');
+        error.status = 409; error.code = 'TRIP_WORKSPACE_CONFLICT';
+        error.workspace = Object.keys(previous).length ? structuredClone(previous) : null;
+        throw error;
+      }
+      const messages = reset ? [] : Array.isArray(source.chatMessages)
         ? source.chatMessages.slice(-160).map((message) => ({
           role: message?.role === 'user' ? 'user' : 'assistant',
           content: String(message?.content || '').slice(0, 12000),
@@ -164,10 +172,12 @@ export async function createPersistentStore({ rootDir, filePath, enabled = true 
       const value = {
         ownerUserId: owner,
         formalTripId: tripId,
+        workspaceRevision: revision + (reset || source.chatMessages !== undefined || source.chatMode !== undefined || !previous.chatEpoch ? 1 : 0),
         chatMessages: messages,
         chatMode: source.chatMode === undefined
           ? (previous.chatMode === 'planner' ? 'planner' : 'chat')
           : (source.chatMode === 'planner' ? 'planner' : 'chat'),
+        chatEpoch: source.chatEpoch === undefined ? (previous.chatEpoch || null) : (String(source.chatEpoch || '').slice(0,64) || null),
         plannerConversationContext: source.plannerConversationContext === undefined
           ? (previous.plannerConversationContext || null)
           : (source.plannerConversationContext && typeof source.plannerConversationContext === 'object'
@@ -223,6 +233,7 @@ export async function createPersistentStore({ rootDir, filePath, enabled = true 
         // the pending preview after a BFF restart.
         chatProposal: session.chatProposal || null,
         plannerConversationContext: session.plannerConversationContext || null,
+        chatEpoch: session.chatEpoch || null,
         itineraryMemorySnapshot: session.itineraryMemorySnapshot || null,
         javaSessionId: session.javaSessionId || null,
         sessionAccessTokenEncrypted: protectSecret(session.sessionAccessToken || '', authSecret),

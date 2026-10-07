@@ -6,12 +6,42 @@
  * Qdrant, and corpus configuration that must not enter the BFF process.
  * Existing allowed process variables always win.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const canonicalEnvFile = 'D:/scenic-guide/ai/.env';
+
+function resolveCanonicalEnvFile() {
+  const custom = process.env.YUYOUZHICE_ENV_FILE;
+  if (custom && existsSync(custom)) return custom;
+
+  const candidates = [
+    path.resolve(PROJECT_ROOT, '.env'),
+    path.resolve(PROJECT_ROOT, '..', '.env'),
+    path.resolve(PROJECT_ROOT, '..', 'backend', '.env'),
+    'D:/scenic-guide/ai/.env'
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      try {
+        const text = readFileSync(candidate, 'utf8');
+        if (text.includes('CORE_BACKEND_URL') || text.includes('JWT_SECRET') || text.includes('DEEPSEEK_API_KEY') || text.includes('YUYOUZHICE_AUTH_SECRET')) {
+          return candidate;
+        }
+      } catch {}
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return 'D:/scenic-guide/ai/.env';
+}
+
+export const canonicalEnvFile = resolveCanonicalEnvFile();
 
 export const BFF_ENV_NAMES = Object.freeze(new Set([
   'CORE_BACKEND_URL',

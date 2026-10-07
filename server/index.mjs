@@ -1,3 +1,4 @@
+import { boundedPlanChatContext, claimPlannerRound, ownsPlannerRound } from './planner-conversation-state.mjs';
 /**
  * index.mjs
  *
@@ -127,6 +128,14 @@ function fact(label, value, status, note, citations = []) {
  */
 function requestDeviceId(req) {
   return String(req.headers['x-yuyouzhice-device'] || 'unknown-device').trim().slice(0, 96) || 'unknown-device';
+}
+
+function guestPreferenceKey(req) {
+  if (req.webSession?.id) return `web:${req.webSession.id}`;
+  const device = String(req.headers?.['x-yuyouzhice-device'] || '').trim();
+  if (device) return `device:${requestDeviceId(req)}`;
+  const legacy = String(req.headers?.['x-session-id'] || '').trim().slice(0, 96);
+  return legacy ? `legacy:${legacy}` : null;
 }
 
 /**
@@ -303,6 +312,7 @@ function writeChatSse(res, event, data) {
 }
 
 async function pipeChatStream(stream, res, requestSignal) {
+  const flowController = new AbortController();
   const readable = typeof stream.body.getReader === 'function' ? Readable.fromWeb(stream.body) : stream.body;
   let clientAborted = Boolean(requestSignal?.aborted);
   let timedOut = false;
@@ -311,15 +321,31 @@ async function pipeChatStream(stream, res, requestSignal) {
 
   const abortForClient = () => {
     clientAborted = true;
+    flowController.abort();
     stream.abort?.();
     readable.destroy?.();
     if (!res.writableEnded && !res.destroyed) res.end();
   };
   requestSignal?.addEventListener('abort', abortForClient, { once: true });
+  res.on('error', abortForClient);
+  if (requestSignal?.aborted) abortForClient();
+  const waitForDrain = () => new Promise((resolve) => {
+    if (flowController.signal.aborted || res.destroyed || res.writableEnded) return resolve();
+    const finish = () => {
+      res.removeListener('drain', finish);
+      res.removeListener('close', finish);
+      flowController.signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    res.once('drain', finish);
+    res.once('close', finish);
+    flowController.signal.addEventListener('abort', finish, { once: true });
+  });
 
   let timer = setTimeout(() => {
     if (clientAborted || doneSeen || res.writableEnded || res.destroyed) return;
     timedOut = true;
+    flowController.abort();
     stream.abort?.();
     writeChatSse(res, 'error', 'BFF 对话流等待超时，请重新提问。');
     writeChatSse(res, 'done', 'complete');
@@ -333,6 +359,7 @@ async function pipeChatStream(stream, res, requestSignal) {
       timer = setTimeout(() => {
         if (clientAborted || doneSeen || res.writableEnded || res.destroyed) return;
         timedOut = true;
+        flowController.abort();
         stream.abort?.();
         writeChatSse(res, 'error', 'BFF 对话流等待超时，请重新提问。');
         writeChatSse(res, 'done', 'complete');
@@ -349,7 +376,10 @@ async function pipeChatStream(stream, res, requestSignal) {
       const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       probe = (probe + text).slice(-256);
       if (/event:\s*done(?:\r?\n|$)/.test(probe)) doneSeen = true;
-      if (!res.writableEnded && !res.destroyed) res.write(chunk);
+      if (!res.writableEnded && !res.destroyed) {
+        const accepted = res.write(chunk);
+        if (!accepted && !doneSeen) await waitForDrain();
+      }
       if (doneSeen) {
         if (timer) clearTimeout(timer);
         if (!res.writableEnded && !res.destroyed) res.end();
@@ -374,6 +404,9 @@ async function pipeChatStream(stream, res, requestSignal) {
       res.end();
     }
   } finally {
+    flowController.abort();
+    if (res.writableFinished || res.destroyed) res.removeListener('error', abortForClient);
+    else res.once('close', () => res.removeListener('error', abortForClient));
     clearTimeout(timer);
     requestSignal?.removeEventListener('abort', abortForClient);
     stream.cleanup?.();
@@ -381,10 +414,21 @@ async function pipeChatStream(stream, res, requestSignal) {
 }
 
 async function body(req) {
-  let raw = '';
-  for await (const chunk of req) raw += chunk;
-  if (!raw) return {};
-  try { return JSON.parse(raw); } catch { return {}; }
+  const configured = Number(process.env.BFF_MAX_BODY_BYTES);
+  const limit = Number.isSafeInteger(configured) && configured > 0 ? configured : 3 * 1024 * 1024;
+  const tooLarge = () => Object.assign(new Error('请求内容过大，请精简后重试。'), { status: 413, code: 'BODY_TOO_LARGE' });
+  if (Number(req.headers?.['content-length']) > limit) throw tooLarge();
+  const chunks = []; let bytes = 0;
+  const stream = typeof req.iterator === 'function' ? req.iterator({ destroyOnReturn: false }) : req;
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > limit) { req.resume?.(); throw tooLarge(); }
+    chunks.push(buffer);
+  }
+  if (!bytes) return {};
+  try { return JSON.parse(Buffer.concat(chunks, bytes).toString('utf8')); }
+  catch { throw Object.assign(new Error('请求内容不是有效的 JSON。'), { status: 400, code: 'INVALID_JSON' }); }
 }
 
 function tokenExpiresAt(token) {
@@ -553,6 +597,7 @@ function javaErrorResponse(res, error, fallback = 'Java Core Backend 请求失�
 }
 
 function plannerAdjustmentErrorResponse(res, error, fallback) {
+  if (['BODY_TOO_LARGE', 'INVALID_JSON'].includes(error?.code)) return json(res, error.status, { ok: false, code: error.code, message: error.message });
   if (!(error instanceof JavaCoreError)) {
     const requestId = randomUUID();
     const diagnostics = diagnosticError(error);
@@ -744,29 +789,7 @@ async function multipartBody(req, maxBytes = 60 * 1024 * 1024) {
  * 对话中的“当前行程偏好”只能来自已授权的 BFF 规划草稿，不能直接相信浏览器传参。
  * 它是本次规划的临时快照，不会写入用户长期偏好或 Redis 自动槽位。
  */
-function planChatContext(session) {
-  const constraints = session?.trip?.constraints;
-  const days = Array.isArray(session?.trip?.days) ? session.trip.days : [];
-  const currentStops = days.flatMap((day) => Array.isArray(day?.stops) ? day.stops : []).map((stop) => ({
-    name: String(stop?.name || '').trim(),
-    address: String(stop?.address || '').trim(),
-    duration: String(stop?.duration || '').trim(),
-    summary: String(stop?.summary || stop?.intro || '').trim(),
-    aiGuide: String(stop?.aiGuide || '').trim()
-  })).filter((s) => Boolean(s.name)).slice(0, 20);
-
-  const compact = {
-    companions: String(constraints?.companions || '').trim(),
-    walkingTolerance: String(constraints?.walkingTolerance || '').trim(),
-    interests: Array.isArray(constraints?.interests) ? constraints.interests.map((item) => String(item).trim()).filter(Boolean).slice(0, 12) : [],
-    transportPreference: String(constraints?.transportPreference || '').trim(),
-    dietPreference: String(constraints?.dietPreference || '').trim(),
-    stayArea: String(constraints?.stayArea || '').trim(),
-    budget: constraints?.budget && typeof constraints.budget === 'object' ? constraints.budget : null,
-    currentStops
-  };
-  return JSON.stringify(compact).slice(0, 3600);
-}
+function planChatContext(session, activeDay = 1) { return boundedPlanChatContext(session, activeDay); }
 
 // A formal Trip has its own working memory. It is deliberately distinct from
 // Java's account-level long-term memories: this snapshot describes only the
@@ -803,20 +826,28 @@ function hydrateFormalTripWorkspace(session) {
     return null;
   }
   session.plannerConversationContext = workspace.plannerConversationContext || null;
+  session.chatEpoch = workspace.chatEpoch || session.chatEpoch || null;
   session.itineraryMemorySnapshot = workspace.itineraryMemorySnapshot || itineraryMemorySnapshot(session);
   return workspace;
 }
 
-async function persistFormalTripWorkspace(session, patch = {}) {
+async function persistFormalTripWorkspace(session, patch = {}, { reset = false, expectedRevision, expectedEpoch } = {}) {
   const userId = String(session?.userId || '').trim();
   const formalTripId = String(session?.formalTripId || '').trim();
   if (!userId || !formalTripId) return null;
+  const current = persistentStore.getTripWorkspace?.(userId, formalTripId);
+  if (!reset && current?.chatEpoch && session.chatEpoch && session.chatEpoch !== current.chatEpoch && expectedRevision === undefined) {
+    hydrateFormalTripWorkspace(session); return current;
+  }
+  if (!reset) session.chatEpoch = current?.chatEpoch || session.chatEpoch || randomUUID();
   session.itineraryMemorySnapshot = itineraryMemorySnapshot(session);
   return persistentStore.saveTripWorkspace?.({
     userId,
     formalTripId,
+    reset, expectedRevision, expectedEpoch,
     workspace: {
       plannerConversationContext: session.plannerConversationContext || null,
+      chatEpoch: session.chatEpoch || null,
       itineraryMemorySnapshot: session.itineraryMemorySnapshot,
       ...patch
     }
@@ -832,8 +863,14 @@ async function persistFormalTripWorkspace(session, patch = {}) {
 async function restorePlannerSession(sessionId, req) {
   const id = String(sessionId || '').trim();
   if (!id) return null;
+  const webSession = sessionForRequest(req);
   const current = sessions.get(id);
-  if (current) return current;
+  if (current) {
+    if (current.userId && webSession?.user?.id !== current.userId) return null;
+    if (current.deviceId && current.deviceId !== requestDeviceId(req)) return null;
+    if (current.formalTripId) hydrateFormalTripWorkspace(current);
+    return current;
+  }
 
   const draft = persistentStore.getPlannerDraft?.(id);
   if (!draft) return null;
@@ -843,7 +880,6 @@ async function restorePlannerSession(sessionId, req) {
     console.warn('[BFF][planner-restore-denied]', JSON.stringify({ reason: 'DEVICE_MISMATCH', hasUser: Boolean(draft.userId) }));
     return null;
   }
-  const webSession = sessionForRequest(req);
   if (draft.userId && webSession?.user?.id !== draft.userId) {
     console.warn('[BFF][planner-restore-denied]', JSON.stringify({ reason: 'USER_MISMATCH', hasWebSession: Boolean(webSession) }));
     return null;
@@ -919,14 +955,9 @@ function isBriefPlannerFollowUp(message) {
   return !/(替换|换成|换为|改成|改为|推荐|景点|行程|室内|同片区|附近|删除|移除|加上|添加|下雨|少走路|重排)/.test(text);
 }
 
-function plannerContinuation(session, sourceContext = {}) {
-  const fromRequest = sourceContext.pendingClarification && typeof sourceContext.pendingClarification === 'object'
-    ? sourceContext.pendingClarification
-    : null;
-  const stored = session?.plannerConversationContext && typeof session.plannerConversationContext === 'object'
-    ? session.plannerConversationContext
-    : null;
-  return fromRequest || stored;
+function plannerContinuation(session) {
+  const pending = session?.plannerConversationContext;
+  return pending?.intentId && pending.expiresAt > Date.now() && Number(pending.baseRevision) === Number(session?.trip?.version || 1) ? pending : null;
 }
 
 function plannerConversationRequest(input = {}, session, targetSessionId) {
@@ -938,31 +969,21 @@ function plannerConversationRequest(input = {}, session, targetSessionId) {
   const proposalMatches = storedProposal
     && requestedProposalId
     && String(storedProposal.proposalId || '') === String(requestedProposalId);
-  const recoveredTargetStopId = proposalMatches
+  const recoveredTargetStopId = proposalMatches && storedProposal.intent?.scope === 'STOP'
     ? String(storedProposal.intent?.targetStopId || storedProposal.changedSegments?.[0] || '').trim() || null
     : null;
   let selectedStopId = String(sourceContext.selectedStopId ?? input.selectedStopId ?? '').trim()
     || recoveredTargetStopId
     || null;
   let message = String(input.message || '').trim();
-  const continuation = plannerContinuation(session, sourceContext);
-  const pendingOperation = String(continuation?.operation || '').trim();
-  // “改一下景点”后的“洪崖洞”是上一轮澄清问题的答案，不是新的孤立指令。
-  // 当没有页面选中站点时，恢复这份未完成上下文并把简短景点名补成可执行的替换候选请求。
-  if (!selectedStopId
-      && /^(REPLACE_STOP|SUGGEST_REPLACEMENTS|REPLAN_DAY)$/i.test(pendingOperation)
-      && isBriefPlannerFollowUp(message)) {
-    const matchedStop = plannerStopFromReference(session?.trip, message);
-    if (matchedStop?.id && matchedStop?.name) {
-      selectedStopId = String(matchedStop.id);
-      message = `请推荐${String(matchedStop.name)}的同片区可替换景点`;
-    }
-  }
+  const continuation = plannerContinuation(session);
   const selectedStopIds = Array.isArray(sourceContext.selectedStopIds)
     ? sourceContext.selectedStopIds.map((id) => String(id)).filter(Boolean)
     : (Array.isArray(input.selectedStopIds) ? input.selectedStopIds.map((id) => String(id)).filter(Boolean) : []);
   const context = {
     activeDay: Number(sourceContext.activeDay ?? input.activeDay ?? 1),
+    pendingIntentId: continuation?.intentId || null,
+    resetConversation: sourceContext.resetConversation === true,
     selectedStopId,
     activeProposalId: requestedProposalId,
     pinnedStopIds: Array.isArray(sourceContext.pinnedStopIds)
@@ -1087,6 +1108,10 @@ async function createSession(input = '', {
 }
 
 async function api(req, res, url, requestSignal) {
+  if (url.pathname === '/api/chat/stream' && req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: '对话请求需要通过 POST 提交。' });
+  }
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(req.method || '').toUpperCase())) {
     const security = assertMutationSecurity(req, sessionForRequest(req), {
       testCompatibility: process.env.YUYOUZHICE_TEST_FIXTURES === '1' || process.env.YUYOUZHICE_TEST_SESSION_COMPAT === '1'
@@ -1382,25 +1407,29 @@ async function api(req, res, url, requestSignal) {
     const user = await authUser(req);
     return json(res, 200, { ok: true, anonymous: !user, user, csrfToken: req.webSession?.csrfToken || null, trip: null, message: user ? '当前已登录。' : '当前为匿名状态，规划后可保存草稿。' });
   }
-  if (req.method === 'GET' && url.pathname === '/api/chat/stream') {
-    const message = String(url.searchParams.get('message') || '').trim();
+  if (req.method === 'POST' && url.pathname === '/api/chat/stream') {
+    const chatInput = req.method === 'POST' ? await body(req) : null;
+    const chatParams = chatInput ? new URLSearchParams(Object.entries(chatInput).map(([k,v]) => [k,String(v ?? '')])) : url.searchParams;
+    const message = String(chatParams.get('message') || '').trim();
     if (!message) return json(res, 400, { ok: false, code: 'CHAT_INVALID_REQUEST', message: '对话内容不能为空。' });
     if (message.length > 4000) return json(res, 413, { ok: false, code: 'CHAT_INVALID_REQUEST', message: '对话内容过长，请分段发送。' });
-    const mode = url.searchParams.get('mode') === 'deep' ? 'deep' : 'normal';
-    const requestedSessionId = String(url.searchParams.get('sessionId') || '').trim();
+    const mode = chatParams.get('mode') === 'deep' ? 'deep' : 'normal';
+    const requestedSessionId = String(chatParams.get('sessionId') || '').trim();
     const sessionId = (requestedSessionId || `web-${randomUUID()}`).slice(0, 128);
-    const plannerSessionId = String(url.searchParams.get('plannerSessionId') || '').trim().slice(0, 128);
-    const tripId = String(url.searchParams.get('tripId') || '').trim().slice(0, 128);
-    const currentVersion = String(url.searchParams.get('currentVersion') || '').trim().slice(0, 32);
-    const activeDay = String(url.searchParams.get('activeDay') || '').trim().slice(0, 8);
-    const activeStopId = String(url.searchParams.get('activeStopId') || '').trim().slice(0, 128);
-    const activeStopName = String(url.searchParams.get('activeStopName') || '').trim().slice(0, 128);
+    const plannerSessionId = String(chatParams.get('plannerSessionId') || '').trim().slice(0, 128);
+    const tripId = String(chatParams.get('tripId') || '').trim().slice(0, 128);
+    const currentVersion = String(chatParams.get('currentVersion') || '').trim().slice(0, 32);
+    const activeDay = String(chatParams.get('activeDay') || '').trim().slice(0, 8);
+    const activeStopId = String(chatParams.get('activeStopId') || '').trim().slice(0, 128);
+    const activeStopName = String(chatParams.get('activeStopName') || '').trim().slice(0, 128);
     const user = await authUser(req);
     let planContext = '';
+    let chatPlannerSession = null;
     if (plannerSessionId) {
       try {
         // 恢复时会校验当前用户与设备；无法恢复时普通聊天仍可继续，只是不注入行程快照。
-        planContext = planChatContext(await restorePlannerSession(plannerSessionId, req));
+        chatPlannerSession = await restorePlannerSession(plannerSessionId, req);
+        planContext = planChatContext(chatPlannerSession, Number(activeDay || 1));
       } catch (error) {
         console.warn('[BFF][chat-plan-context-unavailable]', JSON.stringify({ reason: error?.code || error?.name || 'UNKNOWN' }));
       }
@@ -1417,7 +1446,7 @@ async function api(req, res, url, requestSignal) {
     let stream;
     try {
       stream = await javaCore.chatStream(
-        { message, sessionId, mode, plannerSessionId, tripId, currentVersion, activeDay, activeStopId, activeStopName, planContext },
+        { message, sessionId: chatPlannerSession?.chatEpoch ? `epoch-${chatPlannerSession.chatEpoch}` : sessionId, mode, plannerSessionId, tripId, currentVersion, activeDay, activeStopId, activeStopName, planContext },
         javaTokenFor(req),
         requestSignal
       );
@@ -1436,7 +1465,7 @@ async function api(req, res, url, requestSignal) {
   }
   if (req.method === 'POST' && url.pathname === '/api/chat/proposal') {
     const input = await body(req);
-    const session = sessions.get(input.sessionId);
+    const session = await restorePlannerSession(input.sessionId, req);
     if (!session) return json(res, 404, { ok: false, message: '规划草稿已失效，请重新生成。' });
     const message = String(input.message || '').trim();
     if (!message) return json(res, 400, { ok: false, message: '请求内容不能为空。' });
@@ -1525,7 +1554,7 @@ async function api(req, res, url, requestSignal) {
   }
   if (req.method === 'POST' && url.pathname === '/api/chat/proposal/confirm') {
     const input = await body(req);
-    const session = sessions.get(input.sessionId);
+    const session = await restorePlannerSession(input.sessionId, req);
     if (!session) return json(res, 404, { ok: false, message: '规划草稿已失效，请重新生成。' });
     if (input.confirm === false) {
       session.chatProposal = null;
@@ -1615,6 +1644,7 @@ async function api(req, res, url, requestSignal) {
     let typedPreferences = null;
     if (user && input.usePreferences) {
       try {
+        await javaCore.getPrependPrompt(javaTokenFor(req));
         typedPreferences = await javaCore.getPreferences(javaTokenFor(req), requestSignal);
       } catch (error) {
         return javaErrorResponse(res, error, '无法读取 Java Preferences。');
@@ -1623,7 +1653,7 @@ async function api(req, res, url, requestSignal) {
     const storedPreferences = typedPreferences ? legacyPreferenceValues(typedPreferences) : [];
     let session;
     try {
-      const guestPrompt = guestPrependPromptStore.get(req.webSession?.id || req.headers?.['x-session-id'] || 'guest') || '';
+      const guestPrompt = guestPrependPromptStore.get(guestPreferenceKey(req)) || '';
       session = await createSession(promptText, {
         constraints: input.constraints || {},
         candidateUsePreferences: Boolean(input.usePreferences),
@@ -1678,28 +1708,22 @@ async function api(req, res, url, requestSignal) {
       hasActiveProposal: Boolean(input.context?.activeProposalId),
       baseRevision: Number(input.baseRevision || session.trip?.version || 1)
     }));
+    const round = claimPlannerRound(session);
     try {
       const plannerRequest = plannerConversationRequest(input, session, targetSessionId);
       const conversationResult = await javaCore.conversation(targetSessionId, plannerRequest, javaTokenFor(req));
-      if (conversationResult?.proposalId) {
-        session.chatProposal = clone(conversationResult);
-      } else if (conversationResult?.applied) {
-        session.chatProposal = null;
-      }
-      if (conversationResult?.requiresClarification || conversationResult?.type === 'CLARIFICATION' || conversationResult?.type === 'UNKNOWN') {
-        session.plannerConversationContext = {
-          operation: String(conversationResult.operation || ''),
-          activeDay: Number(plannerRequest.context?.activeDay || 1),
-          selectedStopId: plannerRequest.context?.selectedStopId || null,
-          updatedAt: new Date().toISOString()
-        };
+      if (!ownsPlannerRound(session, round)) return json(res, 409, { ok: false, code: 'PLANNER_ROUND_SUPERSEDED', message: '这轮请求已被新对话或行程版本取代，请使用最新结果。' });
+      if (conversationResult?.reset) {
+        session.chatEpoch = randomUUID(); session.chatProposal = null; session.plannerConversationContext = null;
       } else {
-        session.plannerConversationContext = null;
+        if (conversationResult?.proposalId) session.chatProposal = clone(conversationResult);
+        else if (conversationResult?.applied) session.chatProposal = null;
+        session.plannerConversationContext = conversationResult?.pendingIntent ? clone(conversationResult.pendingIntent) : null;
       }
       session.updatedAt = new Date().toISOString();
       await persistentStore.savePlannerDraft?.(session);
-      await persistFormalTripWorkspace(session);
-      return json(res, 200, { ...conversationResult, ...capability, sessionId });
+      const workspace = await persistFormalTripWorkspace(session, {}, { reset: Boolean(conversationResult?.reset) });
+      return json(res, 200, { ...conversationResult, ...capability, sessionId, workspace });
     } catch (error) {
       void writeBffDiagnostic('planner-java-error', {
         route: '/api/planner/conversation',
@@ -1755,12 +1779,13 @@ async function api(req, res, url, requestSignal) {
           message: 'Java Planner 返回的行程版本不是严格的 Revision +1，未更新当前页面行程。'
         });
       }
-      if (applyResult.trip) {
+      if (applyResult.trip && currentVersion >= Number(session.trip?.version || 1)) {
+        claimPlannerRound(session);
         session.trip = clone(applyResult.trip);
         session.syncRevision = currentVersion;
         session.updatedAt = new Date().toISOString();
         session.chatProposal = null;
-        session.plannerConversationContext = null;
+        session.plannerConversationContext = applyResult.pendingIntent ? clone(applyResult.pendingIntent) : null;
         await persistentStore.savePlannerDraft?.(session);
         await persistFormalTripWorkspace(session);
       }
@@ -1998,7 +2023,8 @@ async function api(req, res, url, requestSignal) {
         userId: user.id,
         deviceId: requestDeviceId(req)
       });
-      const workspace = hydrateFormalTripWorkspace(session);
+      hydrateFormalTripWorkspace(session);
+      const workspace = await persistFormalTripWorkspace(session);
       const formalTrips = await javaCore.listTrips(javaTokenFor(req));
       const history = (Array.isArray(formalTrips) ? formalTrips : []).map(formalTripHistoryProjection);
       return json(res, 200, {
@@ -2066,6 +2092,7 @@ async function api(req, res, url, requestSignal) {
       try {
         const result = await javaCore.mutatePlannerStops(targetSessionId, {
           operation: String(input.operation || 'add'),
+          allowRepeat: input.allowRepeat === true,
           attractionId: String(input.attractionId || ''),
           day: input.day,
           targetStopId: String(input.targetStopId || ''),
@@ -2312,6 +2339,10 @@ async function api(req, res, url, requestSignal) {
     const plannerSession = input.plannerSessionId
       ? await restorePlannerSession(String(input.plannerSessionId), req)
       : null;
+    if (input.plannerSessionId && !plannerSession) return json(res, 404, {
+      ok: false, code: 'PLANNER_SESSION_NOT_FOUND', recoverable: true,
+      message: '规划会话已失效或无权访问，请重新打开行程后再保存。'
+    });
     const usePlannerSave = plannerSession && !plannerCapability(plannerSession).legacyMode
       && String(plannerSession.javaSessionId || '').trim();
     const targetTripId = String(input.savedTripId || input.tripId || input.trip?.savedTripId || input.trip?.formalTripId || '').trim();
@@ -2328,19 +2359,27 @@ async function api(req, res, url, requestSignal) {
         formal = saved.trip;
         if (!formal || !formal.id) return json(res, 502, { ok: false, code: 'PLANNER_SAVE_CONTRACT_INVALID', message: 'Java Planner 未返回有效正式行程。' });
         plannerSession.formalTripId = formal.id;
-        plannerSession.trip = clone(formal.plan || plannerSession.trip);
+        // Saving a snapshot does not replace a draft that may have advanced
+        // while Java committed the formal Trip. Attach only saved identity.
+        plannerSession.trip = plannerSession.trip || clone(formal.plan || {});
         plannerSession.trip.formalTripId = formal.id;
         plannerSession.trip.savedTripId = formal.id;
+        plannerSession.trip.sourceTripId = formal.id;
+        plannerSession.trip.sourceTripVersion = Math.max(Number(plannerSession.trip.sourceTripVersion || 0), Number(formal.currentVersion || 1));
         isUpdate = Boolean(targetTripId || formal.currentVersion > 1);
         await persistentStore.savePlannerDraft?.(plannerSession);
         await persistFormalTripWorkspace(plannerSession);
       } else if (targetTripId) {
+        const expectedVersion = Number(input.expectedVersion ?? input.trip.sourceTripVersion ?? input.trip.formalTripVersion ?? input.trip.version);
+        if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) return json(res, 428, {
+          ok: false, code: 'TRIP_BASE_VERSION_REQUIRED', message: '缺少行程编辑基线，请重新打开行程后再保存。'
+        });
         const current = await javaCore.getTrip(javaTokenFor(req), targetTripId);
         formal = await javaCore.updateTrip(javaTokenFor(req), targetTripId, {
           plan: input.trip,
           title: String(input.trip.title || current.title || ''),
-          expectedVersion: Number(current.currentVersion),
-          idempotencyKey: `web-save-${targetTripId}-${Number(current.currentVersion)}`,
+          expectedVersion,
+          idempotencyKey: `web-save-${targetTripId}-${expectedVersion}`,
           changeReason: String(input.reason || 'Web BFF 保存行程')
         });
         isUpdate = true;
@@ -2357,7 +2396,7 @@ async function api(req, res, url, requestSignal) {
         operation: 'trip', candidate: { trip: formal.plan },
         candidateLatencyMs: Math.round(performance.now() - candidateStartedAt)
       }));
-      return json(res, 200, { ok: true, saved, isUpdate, message: isUpdate ? 'Java Core Backend 已更新正式行程。' : 'Java Core Backend 已保存正式行程。', shadow });
+      return json(res, 200, { ok: true, saved, isUpdate, workspace: persistentStore.getTripWorkspace?.(user.id, formal.id) || null, message: isUpdate ? 'Java Core Backend 已更新正式行程。' : 'Java Core Backend 已保存正式行程。', shadow });
     } catch (error) {
       shadowMetrics.record(compareShadow({
         operation: 'trip',
@@ -2389,7 +2428,8 @@ async function api(req, res, url, requestSignal) {
       session.syncRevision = Number(restored.syncRevision || 1);
       session.legacyMode = false;
       session.adjustmentCapability = 'V1_PROPOSAL';
-      const workspace = hydrateFormalTripWorkspace(session);
+      hydrateFormalTripWorkspace(session);
+      const workspace = await persistFormalTripWorkspace(session);
       await persistentStore.savePlannerDraft?.(session);
       return json(res, 200, {
         ok: true,
@@ -2416,29 +2456,47 @@ async function api(req, res, url, requestSignal) {
   // The workspace is scoped to one authenticated user and one formal Trip.
   // Browser data may update its chat transcript/mode only; continuation and
   // itinerary-memory data are derived server-side from the authorized session.
-  if (req.method === 'PUT' && /^\/api\/trips\/[^/]+\/workspace$/.test(url.pathname)) {
+  if (['GET', 'PUT'].includes(req.method) && /^\/api\/trips\/[^/]+\/workspace$/.test(url.pathname)) {
     const user = await authUser(req);
     if (!user) return json(res, 401, { ok: false, message: '请登录后保存此行程的对话记录。' });
     const tripId = decodeURIComponent(url.pathname.split('/')[3]);
-    const input = await body(req);
+    const input = req.method === 'GET' ? { sessionId: url.searchParams.get('sessionId') } : await body(req);
     const session = await restorePlannerSession(String(input.sessionId || ''), req);
     if (!session) return json(res, 404, { ok: false, code: 'PLANNER_SESSION_NOT_FOUND', recoverable: true, message: '当前行程会话已失效，请重新打开该行程后再继续对话。' });
     if (String(session.userId || '') !== String(user.id || '') || String(session.formalTripId || '') !== tripId) {
       return json(res, 403, { ok: false, code: 'TRIP_WORKSPACE_FORBIDDEN', message: '当前会话不属于这份行程，无法写入对话记录。' });
     }
-    const workspace = await persistFormalTripWorkspace(session, {
-      chatMessages: Array.isArray(input.chatMessages) ? input.chatMessages : [],
-      chatMode: input.chatMode === 'planner' ? 'planner' : 'chat'
-    });
-    return json(res, 200, { ok: true, workspace: clone(workspace) });
+    if (req.method === 'GET') {
+      const workspace = await persistFormalTripWorkspace(session);
+      return json(res, 200, { ok: true, workspace: clone(workspace) });
+    }
+    if (!Number.isSafeInteger(input.expectedRevision) || typeof input.chatEpoch !== 'string' || !input.chatEpoch) {
+      return json(res, 409, { ok: false, code: 'TRIP_WORKSPACE_CONFLICT', message: '请重新打开行程以同步对话工作区。', workspace: persistentStore.getTripWorkspace?.(user.id, tripId) || null });
+    }
+    try {
+      const workspace = await persistFormalTripWorkspace(session, {
+        chatMessages: Array.isArray(input.chatMessages) ? input.chatMessages : [],
+        chatMode: input.chatMode === 'planner' ? 'planner' : 'chat'
+      }, { expectedRevision: input.expectedRevision, expectedEpoch: input.chatEpoch });
+      return json(res, 200, { ok: true, workspace: clone(workspace) });
+    } catch (error) {
+      if (error?.code === 'TRIP_WORKSPACE_CONFLICT') return json(res, 409, {
+        ok: false, code: error.code, message: error.message, workspace: error.workspace
+      });
+      throw error;
+    }
   }
   if (req.method === 'DELETE' && /^\/api\/trips\/[^/]+$/.test(url.pathname)) {
     const user = await authUser(req);
     if (!user) return json(res, 401, { ok: false, message: '请登录后删除已保存行程。' });
     const tripId = decodeURIComponent(url.pathname.split('/').pop());
+    const input = await body(req);
+    const expectedVersion = input?.expectedVersion;
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+      return json(res, 428, { ok: false, code: 'TRIP_VERSION_REQUIRED', message: '请刷新行程列表后重试删除。' });
+    }
     try {
-      const current = await javaCore.getTrip(javaTokenFor(req), tripId);
-      const deleted = await javaCore.deleteTrip(javaTokenFor(req), tripId, Number(current.currentVersion));
+      const deleted = await javaCore.deleteTrip(javaTokenFor(req), tripId, expectedVersion);
       await persistentStore.deleteTripWorkspace?.(user.id, tripId);
       return json(res, 200, { ok: true, deletedId: deleted?.tripId || tripId, message: 'Java Core Backend 已删除正式行程。' });
     } catch (error) {
@@ -2576,10 +2634,13 @@ async function api(req, res, url, requestSignal) {
         stayArea: current.stayArea,
         legacyMetadata: current.legacyMetadata
       };
-      if (value === '少走路' && String(next.walkingTolerance).toUpperCase() === 'LOW') next.walkingTolerance = 'UNSPECIFIED';
-      if (value === '打车优先' && String(next.transportPreference).toUpperCase() === 'TAXI') next.transportPreference = 'UNSPECIFIED';
-      if (value === '公共交通优先' && String(next.transportPreference).toUpperCase() === 'PUBLIC_TRANSIT') next.transportPreference = 'UNSPECIFIED';
-      if (value.startsWith('住宿区域：')) next.stayArea = '';
+      const walkingLabels = { LOW: '少走路', HIGH: '步行优先' };
+      const transportLabels = { PUBLIC_TRANSIT: '公共交通优先', WALKING: '步行优先', DRIVING: '驾车优先', TAXI: '打车优先', BICYCLE: '骑行优先', MIXED: '混合出行' };
+      const dietLabels = { VEGETARIAN: '素食', VEGAN: '纯素', HALAL: '清真', KOSHER: '犹太洁食', ALLERGY: '过敏原避让' };
+      if (walkingLabels[String(next.walkingTolerance).toUpperCase()] === value) next.walkingTolerance = 'UNSPECIFIED';
+      if (transportLabels[String(next.transportPreference).toUpperCase()] === value) next.transportPreference = 'UNSPECIFIED';
+      if (dietLabels[String(next.dietPreference).toUpperCase()] === value) next.dietPreference = 'UNSPECIFIED';
+      if (next.stayArea && value === `住宿区域：${next.stayArea}`) next.stayArea = '';
       const updated = await javaCore.replacePreferences(javaTokenFor(req), next, current.revision);
       const history = recordLegacyPreferenceEvent(user.id, { value, action: 'removed' });
       return json(res, 200, { ok: true, ...preferenceResponse(updated, history), message: `已移除“${value}”偏好。` });
@@ -2591,24 +2652,22 @@ async function api(req, res, url, requestSignal) {
   if (req.method === 'GET' && url.pathname === '/api/preferences/prepend-prompt') {
     const user = await authUser(req);
     if (!user) {
-      const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+      const sessionId = guestPreferenceKey(req);
       const prompt = guestPrependPromptStore.get(sessionId) || '';
       return json(res, 200, { ok: true, prependPrompt: prompt, enabled: true });
     }
     try {
+      await javaCore.getPrependPrompt(javaTokenFor(req));
       const typedPreferences = await javaCore.getPreferences(javaTokenFor(req));
-      let prompt = typedPreferences?.legacyMetadata?.profilePrependPrompt;
-      if (!prompt) {
-        try {
-          const resJava = await javaCore.getPrependPrompt(javaTokenFor(req));
-          prompt = resJava?.data?.prependPrompt || resJava?.prependPrompt || '';
-        } catch {}
-      }
+      const prompt = typedPreferences?.legacyMetadata?.profilePrependPrompt;
       return json(res, 200, {
         ok: true,
         prependPrompt: prompt || '',
         userCustomizedPrompt: typedPreferences?.legacyMetadata?.userCustomizedPrompt || '',
-        enabled: typedPreferences?.legacyMetadata?.travelMemoryEnabled !== false
+        generatedPrependPrompt: typedPreferences?.legacyMetadata?.generatedPrependPrompt || '',
+        legacyUserCustomizedPrompt: typedPreferences?.legacyMetadata?.legacyUserCustomizedPrompt || '',
+        manualPromptNeedsReview: typedPreferences?.legacyMetadata?.manualPromptNeedsReview === true,
+        enabled: typedPreferences?.legacyMetadata?.travelMemoryEnabled === true
       });
     } catch (error) {
       return javaErrorResponse(res, error, '无法读取旅行偏好提示词。');
@@ -2619,26 +2678,34 @@ async function api(req, res, url, requestSignal) {
     const user = await authUser(req);
     const input = await body(req);
     const action = String(input.action || 'save');
-    const customText = String(input.prependPrompt || input.userCustomizedPrompt || '').trim();
+    const customText = String(input.userCustomizedPrompt ?? input.prependPrompt ?? '').trim();
 
     if (!user) {
-      const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+      const sessionId = guestPreferenceKey(req);
+      if (!sessionId) return json(res, 400, { ok: false, code: 'GUEST_ID_REQUIRED', message: '缺少设备标识，请刷新页面后重试。' });
       guestPrependPromptStore.set(sessionId, customText);
       return json(res, 200, { ok: true, prependPrompt: customText, message: '偏好提示词已保存。' });
     }
 
     try {
       let updatedPrompt = customText;
+      let updatedFields = {};
       if (action === 'resynthesize') {
         const resJava = await javaCore.updatePrependPrompt({ action: 'resynthesize' }, javaTokenFor(req));
-        updatedPrompt = resJava?.data?.prependPrompt || resJava?.prependPrompt || '';
+        updatedFields = resJava?.data ?? resJava ?? {};
+        updatedPrompt = updatedFields.prependPrompt ?? '';
       } else {
-        const resJava = await javaCore.updatePrependPrompt({ prependPrompt: customText }, javaTokenFor(req));
-        updatedPrompt = resJava?.data?.prependPrompt || resJava?.prependPrompt || customText;
+        const resJava = await javaCore.updatePrependPrompt({ userCustomizedPrompt: customText, prependPrompt: customText }, javaTokenFor(req));
+        updatedFields = resJava?.data ?? resJava ?? {};
+        updatedPrompt = updatedFields.prependPrompt ?? customText;
       }
       return json(res, 200, {
         ok: true,
         prependPrompt: updatedPrompt,
+        userCustomizedPrompt: updatedFields.userCustomizedPrompt ?? customText,
+        generatedPrependPrompt: updatedFields.generatedPrependPrompt ?? '',
+        legacyUserCustomizedPrompt: updatedFields.legacyUserCustomizedPrompt ?? '',
+        manualPromptNeedsReview: updatedFields.manualPromptNeedsReview === true,
         message: action === 'resynthesize' ? '前置提示词已重新生成。' : '前置提示词已保存。'
       });
     } catch (error) {
@@ -2649,7 +2716,7 @@ async function api(req, res, url, requestSignal) {
   if (req.method === 'GET' && url.pathname === '/api/preferences/slots') {
     const user = await authUser(req);
     if (!user) {
-      const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+      const sessionId = guestPreferenceKey(req);
       const guestSlots = guestSlotsStore.get(sessionId) || { diningSlots: [], attractionSlots: [] };
       return json(res, 200, { ok: true, diningSlots: guestSlots.diningSlots || [], attractionSlots: guestSlots.attractionSlots || [] });
     }
@@ -2679,7 +2746,8 @@ async function api(req, res, url, requestSignal) {
     }
 
     if (!user) {
-      const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+      const sessionId = guestPreferenceKey(req);
+      if (!sessionId) return json(res, 400, { ok: false, code: 'GUEST_ID_REQUIRED', message: '缺少设备标识，请刷新页面后重试。' });
       if (!guestSlotsStore.has(sessionId)) guestSlotsStore.set(sessionId, { diningSlots: [], attractionSlots: [] });
       const guestSlots = guestSlotsStore.get(sessionId);
       const key = slot === 'dining' ? 'diningSlots' : 'attractionSlots';
@@ -2741,7 +2809,7 @@ async function api(req, res, url, requestSignal) {
   }
   if (req.method === 'GET' && url.pathname === '/api/planner/context') {
     const user = await authUser(req);
-    const sessionId = req.webSession?.id || req.headers?.['x-session-id'] || 'guest';
+    const sessionId = guestPreferenceKey(req);
     if (!user) {
       return json(res, 200, {
         ok: true,
@@ -2754,6 +2822,7 @@ async function api(req, res, url, requestSignal) {
       });
     }
     try {
+      await javaCore.getPrependPrompt(javaTokenFor(req));
       const typedPreferences = await javaCore.getPreferences(javaTokenFor(req));
       const allMemories = await javaCore.listTravelMemories(javaTokenFor(req));
       // 7天滚动过滤：右侧近期记忆流只返回 7 天内的记录
@@ -2769,8 +2838,11 @@ async function api(req, res, url, requestSignal) {
         attractionSlots: Array.isArray(typedPreferences?.legacyMetadata?.attractionSlots) ? typedPreferences.legacyMetadata.attractionSlots : [],
         profilePrependPrompt: typedPreferences?.legacyMetadata?.profilePrependPrompt || '',
         userCustomizedPrompt: typedPreferences?.legacyMetadata?.userCustomizedPrompt || '',
+        generatedPrependPrompt: typedPreferences?.legacyMetadata?.generatedPrependPrompt || '',
+        legacyUserCustomizedPrompt: typedPreferences?.legacyMetadata?.legacyUserCustomizedPrompt || '',
+        manualPromptNeedsReview: typedPreferences?.legacyMetadata?.manualPromptNeedsReview === true,
         memories: recentMemories,
-        memoryEnabled: typedPreferences?.legacyMetadata?.travelMemoryEnabled !== false
+        memoryEnabled: typedPreferences?.legacyMetadata?.travelMemoryEnabled === true
       });
     } catch {
       return json(res, 200, { ok: true, preferences: [], memories: [], diningSlots: [], attractionSlots: [], profilePrependPrompt: '', memoryEnabled: false });
@@ -2780,6 +2852,7 @@ async function api(req, res, url, requestSignal) {
     const user = await authUser(req);
     if (!user) return json(res, 401, { ok: false, message: '登录后才能查看旅行档案。' });
     try {
+      await javaCore.getPrependPrompt(javaTokenFor(req));
       const typedPreferences = await javaCore.getPreferences(javaTokenFor(req));
       const allMemories = await javaCore.listTravelMemories(javaTokenFor(req));
       const memoryCandidates = await javaCore.listTravelMemoryCandidates(javaTokenFor(req));
@@ -2801,6 +2874,9 @@ async function api(req, res, url, requestSignal) {
         attractionSlots: Array.isArray(typedPreferences?.legacyMetadata?.attractionSlots) ? typedPreferences.legacyMetadata.attractionSlots : [],
         profilePrependPrompt: typedPreferences?.legacyMetadata?.profilePrependPrompt || '',
         userCustomizedPrompt: typedPreferences?.legacyMetadata?.userCustomizedPrompt || '',
+        generatedPrependPrompt: typedPreferences?.legacyMetadata?.generatedPrependPrompt || '',
+        legacyUserCustomizedPrompt: typedPreferences?.legacyMetadata?.legacyUserCustomizedPrompt || '',
+        manualPromptNeedsReview: typedPreferences?.legacyMetadata?.manualPromptNeedsReview === true,
         memories: recentMemories,
         memoryCandidates,
         memoryEnabled: typedPreferences?.legacyMetadata?.travelMemoryEnabled === true,
@@ -2834,7 +2910,9 @@ async function api(req, res, url, requestSignal) {
     if (!['helpful', 'needs-work', 'letter'].includes(value)) return json(res, 400, { ok: false, message: '反馈类型不受支持。' });
     const reason = String(input.reason || '').trim();
     if (value === 'letter' && !reason) return json(res, 400, { ok: false, message: '请先写下反馈内容。' });
-    const session = sessions.get(String(input.sessionId || ''));
+    const sessionId = String(input.sessionId || '').trim();
+    const session = sessionId ? await restorePlannerSession(sessionId, req) : null;
+    if (sessionId && !session) return json(res, 404, { ok: false, message: '规划草稿不存在或无权访问。' });
     const sourceTrip = session?.trip;
     const item = {
       value,
@@ -2944,6 +3022,7 @@ export function createAppServer({ port = PORT } = {}) {
       const record = { method: req.method, route: url.pathname, ...diagnostics };
       console.error(`[BFF] request failed: ${JSON.stringify(record)}`);
       void writeBffDiagnostic('request-error', record);
+      if (!res.headersSent && ['BODY_TOO_LARGE', 'INVALID_JSON'].includes(error?.code)) return json(res, error.status, { ok: false, code: error.code, message: error.message });
       if (!res.headersSent) return json(res, 500, { ok: false, message: '服务出现异常，请稍后重试。' });
     } finally {
       req.removeListener('aborted', abortRequest);
