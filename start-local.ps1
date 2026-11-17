@@ -5,8 +5,29 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$JavaRoot = 'D:\scenic-guide\ai'
-$Config = Join-Path $JavaRoot '.env'
+
+if ($env:SCENIC_GUIDE_JAVA_DIR -and (Test-Path -LiteralPath $env:SCENIC_GUIDE_JAVA_DIR)) {
+    $JavaRoot = $env:SCENIC_GUIDE_JAVA_DIR
+} elseif (Test-Path -LiteralPath (Join-Path $Root '..\backend')) {
+    $JavaRoot = (Resolve-Path (Join-Path $Root '..\backend')).Path
+} elseif (Test-Path -LiteralPath (Join-Path $Root 'backend')) {
+    $JavaRoot = (Resolve-Path (Join-Path $Root 'backend')).Path
+} elseif (Test-Path -LiteralPath 'D:\scenic-guide\ai') {
+    $JavaRoot = 'D:\scenic-guide\ai'
+} else {
+    $JavaRoot = Join-Path $Root 'backend'
+}
+
+$Config = if (Test-Path -LiteralPath (Join-Path $JavaRoot '.env')) {
+    Join-Path $JavaRoot '.env'
+} elseif (Test-Path -LiteralPath (Join-Path $Root '.env')) {
+    Join-Path $Root '.env'
+} elseif (Test-Path -LiteralPath (Join-Path $Root '..\.env')) {
+    Join-Path $Root '..\.env'
+} else {
+    Join-Path $JavaRoot '.env'
+}
+
 $Template = Join-Path $JavaRoot '.env.example'
 $LogRoot = Join-Path $env:TEMP 'yuyouzhice-local-logs'
 $JavaLog = Join-Path $LogRoot 'java-runtime.log'
@@ -15,7 +36,9 @@ $NodeLog = Join-Path $LogRoot 'bff-runtime.stdout.log'
 $NodeErrorLog = Join-Path $LogRoot 'bff-runtime.stderr.log'
 
 if (-not (Test-Path -LiteralPath $Config)) {
-    & (Join-Path $Root 'init-local-config.ps1') -JavaRoot $JavaRoot
+    if (Test-Path -LiteralPath (Join-Path $Root 'init-local-config.ps1')) {
+        & (Join-Path $Root 'init-local-config.ps1') -JavaRoot $JavaRoot
+    }
 }
 if (-not (Test-Path -LiteralPath $Config)) {
     throw ("Canonical environment file is missing: {0}" -f $Config)
@@ -155,6 +178,15 @@ function Wait-ForPort {
     return $false
 }
 
+function Test-PortOpen {
+    param([int]$Port)
+    try {
+        return [bool](Test-NetConnection -ComputerName 127.0.0.1 -Port $Port -WarningAction SilentlyContinue).TcpTestSucceeded
+    } catch {
+        return $false
+    }
+}
+
 Clear-CanonicalProcessEnv
 Import-CanonicalEnv -Path $Config
 $nodeEnvironment = Capture-NodeEnvironment
@@ -205,38 +237,67 @@ if (-not ($jwtReady -and $authReady)) {
     exit 1
 }
 
+# Do not silently reuse a listener whose executable, working tree, and version
+# cannot be verified. Check all required ports before starting any process so a
+# conflict cannot leave a partially started local stack.
+$requiredPorts = @()
+if ((Test-Path -LiteralPath $JavaRoot) -and (Test-Path -LiteralPath (Join-Path $JavaRoot 'mvnw.cmd'))) {
+    $requiredPorts += @{ Port = 8080; Service = 'Java Core Backend' }
+}
+if (Test-Path -LiteralPath (Join-Path $Root 'server\index.mjs')) {
+    $requiredPorts += @{ Port = 3000; Service = 'Web BFF' }
+}
+$FrontendDir = Join-Path $Root 'frontend'
+if (Test-Path -LiteralPath (Join-Path $FrontendDir 'package.json')) {
+    $requiredPorts += @{ Port = 5173; Service = 'Frontend Web' }
+}
+foreach ($entry in $requiredPorts) {
+    if (Test-PortOpen -Port $entry.Port) {
+        Write-Host ("Cannot start {0}: port {1} is already in use. Stop the existing process and retry; unknown processes are never reused." -f $entry.Service, $entry.Port)
+        exit 1
+    }
+}
+
 $javaStarted = $false
 $nodeStarted = $false
 if ((Test-Path -LiteralPath $JavaRoot) -and (Test-Path -LiteralPath (Join-Path $JavaRoot 'mvnw.cmd'))) {
-    if (Wait-ForPort -Port 8080 -TimeoutSeconds 1) {
-        Write-Host 'Java Core Backend :8080     ALREADY READY (reuse existing process)'
-    } else {
-        Start-Process -FilePath (Join-Path $JavaRoot 'mvnw.cmd') -ArgumentList @('spring-boot:run') -WorkingDirectory $JavaRoot -RedirectStandardOutput $JavaLog -RedirectStandardError $JavaErrorLog -WindowStyle Hidden | Out-Null
-    }
+    Start-Process -FilePath (Join-Path $JavaRoot 'mvnw.cmd') -ArgumentList @('spring-boot:run') -WorkingDirectory $JavaRoot -RedirectStandardOutput $JavaLog -RedirectStandardError $JavaErrorLog -WindowStyle Hidden | Out-Null
     $javaStarted = $true
 }
 if (Test-Path -LiteralPath (Join-Path $Root 'server\index.mjs')) {
-    if (Wait-ForPort -Port 3000 -TimeoutSeconds 1) {
-        Write-Host 'Web BFF :3000               ALREADY READY (reuse existing process)'
-    } else {
-        # Java has already received its full canonical environment. Reduce the
-        # parent environment before creating Node so the BFF inherits only its
-        # explicit runtime allowlist; no temporary secret file is created.
-        Apply-NodeEnvironment -Values $nodeEnvironment
-        Write-Host 'Node BFF environment: allowlist only (values are never printed)'
-        Start-Process -FilePath 'node.exe' -ArgumentList @('server/index.mjs') -WorkingDirectory $Root -RedirectStandardOutput $NodeLog -RedirectStandardError $NodeErrorLog -WindowStyle Hidden | Out-Null
-    }
+    # Java has already received its full canonical environment. Reduce the
+    # parent environment before creating Node so the BFF inherits only its
+    # explicit runtime allowlist; no temporary secret file is created.
+    Apply-NodeEnvironment -Values $nodeEnvironment
+    Write-Host 'Node BFF environment: allowlist only (values are never printed)'
+    Start-Process -FilePath 'node.exe' -ArgumentList @('server/index.mjs') -WorkingDirectory $Root -RedirectStandardOutput $NodeLog -RedirectStandardError $NodeErrorLog -WindowStyle Hidden | Out-Null
     $nodeStarted = $true
+}
+
+$frontendStarted = $false
+if (Test-Path -LiteralPath (Join-Path $FrontendDir 'package.json')) {
+    $FrontendLog = Join-Path $LogRoot 'frontend-runtime.stdout.log'
+    $FrontendErrorLog = Join-Path $LogRoot 'frontend-runtime.stderr.log'
+    Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'npm', 'run', 'dev') -WorkingDirectory $FrontendDir -RedirectStandardOutput $FrontendLog -RedirectStandardError $FrontendErrorLog -WindowStyle Hidden | Out-Null
+    $frontendStarted = $true
 }
 
 $javaReady = $javaStarted -and (Wait-ForPort -Port 8080 -TimeoutSeconds 180)
 $nodeReady = $nodeStarted -and (Wait-ForPort -Port 3000 -TimeoutSeconds 45)
+$frontendReady = if ($frontendStarted) { Wait-ForPort -Port 5173 -TimeoutSeconds 45 } else { $false }
 
 Write-Host ''
 Write-Host ('Java Core Backend :8080     ' + $(if ($javaReady) { 'READY' } else { 'FAILED' }))
 Write-Host ('Web BFF :3000               ' + $(if ($nodeReady) { 'READY' } else { 'FAILED' }))
+if ($frontendStarted) {
+    Write-Host ('Frontend Web :5173          ' + $(if ($frontendReady) { 'READY' } else { 'FAILED' }))
+}
 
-if (-not $NoBrowser -and $nodeReady) {
-    Start-Process 'http://localhost:3000'
+if (-not $NoBrowser) {
+    if ($frontendReady) {
+        Start-Process 'http://localhost:5173'
+    } elseif ($nodeReady) {
+        Start-Process 'http://localhost:3000'
+    }
 }
 if (-not ($javaReady -and $nodeReady)) { exit 1 }

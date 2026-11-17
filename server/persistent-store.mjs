@@ -101,8 +101,8 @@ export async function createPersistentStore({ rootDir, filePath, enabled = true 
     await rename(tempPath, absolutePath);
   }
 
-  async function writeNow() {
-    await writeState({
+  function persistedState(draftState = plannerDrafts, workspaceState = tripWorkspaces) {
+    return {
       version: STORE_VERSION,
       nextTripId: 1,
       // These fields are retained as an explicit migration-compatible shape,
@@ -113,14 +113,127 @@ export async function createPersistentStore({ rootDir, filePath, enabled = true 
       preferencesByUser: {},
       preferenceHistoryByUser: {},
       feedbackByUser: Object.fromEntries(feedbackByUser),
-      plannerDrafts: Object.fromEntries(plannerDrafts),
-      tripWorkspaces: Object.fromEntries(tripWorkspaces)
-    });
+      plannerDrafts: Object.fromEntries(draftState),
+      tripWorkspaces: Object.fromEntries(workspaceState)
+    };
+  }
+
+  async function writeNow() {
+    await writeState(persistedState());
+  }
+
+  function enqueueWrite(operation) {
+    // Keep surfacing this write's error to its caller, but let a later write
+    // recover the queue instead of inheriting a permanently rejected promise.
+    writeQueue = writeQueue.catch(() => {}).then(operation);
+    return writeQueue;
   }
 
   function persist() {
-    writeQueue = writeQueue.then(writeNow);
-    return writeQueue;
+    return enqueueWrite(writeNow);
+  }
+
+  function createPlannerDraft(session) {
+    const id = String(session?.id || '').trim();
+    if (!id) return null;
+    return structuredClone({
+      id,
+      input: session.input || '',
+      trip: session.trip || null,
+      shadow: null,
+      candidateSource: session.candidateSource || null,
+      candidateAppliedPreferences: session.candidateAppliedPreferences || [],
+      constraints: session.constraints || {},
+      preferencesApplied: session.preferencesApplied || [],
+      createdAt: session.createdAt || new Date().toISOString(),
+      updatedAt: session.updatedAt || new Date().toISOString(),
+      syncRevision: Number(session.syncRevision || 1),
+      replanHistory: session.replanHistory || [],
+      feedback: [],
+      userId: session.userId || null,
+      deviceId: session.deviceId || null,
+      formalTripId: session.formalTripId || null,
+      // Proposal state is only a BFF restart snapshot; Java owns proposal validity.
+      chatProposal: session.chatProposal || null,
+      plannerConversationContext: session.plannerConversationContext || null,
+      chatEpoch: session.chatEpoch || null,
+      itineraryMemorySnapshot: session.itineraryMemorySnapshot || null,
+      javaSessionId: session.javaSessionId || null,
+      sessionAccessTokenEncrypted: protectSecret(session.sessionAccessToken || '', authSecret),
+      legacyMode: Boolean(session.legacyMode),
+      adjustmentCapability: session.adjustmentCapability || 'LEGACY',
+      plannerVersion: session.plannerVersion || null,
+      policyVersion: session.policyVersion || null,
+      routeDataStatus: session.routeDataStatus || null,
+      explanationSource: session.explanationSource || null,
+      degraded: Boolean(session.degraded),
+      degradationReasons: session.degradationReasons || []
+    });
+  }
+
+  function createTripWorkspace({ userId, formalTripId, workspace, expectedRevision, expectedEpoch, reset = false } = {}, workspaces) {
+    const owner = String(userId || '').trim();
+    const tripId = String(formalTripId || '').trim();
+    if (!owner || !tripId) return null;
+    const source = workspace && typeof workspace === 'object' ? structuredClone(workspace) : {};
+    const key = `${owner}:${tripId}`;
+    const previous = workspaces.get(key);
+    const current = previous || {};
+    const revision = Number(current.workspaceRevision || 0);
+    if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision)
+        || expectedRevision !== revision || !expectedEpoch || expectedEpoch !== current.chatEpoch)) {
+      const error = new Error('对话工作区已更新，请重新打开行程后再保存。');
+      error.status = 409; error.code = 'TRIP_WORKSPACE_CONFLICT';
+      error.workspace = Object.keys(current).length ? structuredClone(current) : null;
+      throw error;
+    }
+    const messages = reset ? [] : Array.isArray(source.chatMessages)
+      ? source.chatMessages.slice(-160).map((message) => ({
+        role: message?.role === 'user' ? 'user' : 'assistant',
+        content: String(message?.content || '').slice(0, 12000),
+        pending: false,
+        error: message?.error ? String(message.error).slice(0, 500) : undefined
+      })).filter((message) => message.content || message.error)
+      : (Array.isArray(current.chatMessages) ? current.chatMessages : []);
+    const value = {
+      ownerUserId: owner,
+      formalTripId: tripId,
+      workspaceRevision: revision + (reset || source.chatMessages !== undefined || source.chatMode !== undefined || !current.chatEpoch ? 1 : 0),
+      chatMessages: messages,
+      chatMode: source.chatMode === undefined
+        ? (current.chatMode === 'agent' ? 'agent' : (current.chatMode === 'planner' ? 'planner' : 'chat'))
+        : (source.chatMode === 'agent' ? 'agent' : (source.chatMode === 'planner' ? 'planner' : 'chat')),
+      chatEpoch: source.chatEpoch === undefined ? (current.chatEpoch || null) : (String(source.chatEpoch || '').slice(0,64) || null),
+      plannerConversationContext: source.plannerConversationContext === undefined
+        ? (current.plannerConversationContext || null)
+        : (source.plannerConversationContext && typeof source.plannerConversationContext === 'object'
+          ? structuredClone(source.plannerConversationContext)
+          : null),
+      itineraryMemorySnapshot: source.itineraryMemorySnapshot === undefined
+        ? (current.itineraryMemorySnapshot || null)
+        : (source.itineraryMemorySnapshot && typeof source.itineraryMemorySnapshot === 'object'
+          ? structuredClone(source.itineraryMemorySnapshot)
+          : null),
+      updatedAt: new Date().toISOString()
+    };
+    workspaces.set(key, value);
+    return structuredClone(value);
+  }
+
+  function mutatePlannerStateAndPersist(mutate) {
+    return enqueueWrite(async () => {
+      const draftState = new Map(plannerDrafts);
+      const workspaceState = new Map(tripWorkspaces);
+      const result = mutate(draftState, workspaceState);
+      // Getters continue reading committed Maps while this candidate snapshot
+      // is written. Commit both maps only after the atomic rename succeeds.
+      await writeState(persistedState(draftState, workspaceState));
+      plannerDrafts.clear();
+      for (const [key, value] of draftState) plannerDrafts.set(key, value);
+      tripWorkspaces.clear();
+      for (const [key, value] of workspaceState) tripWorkspaces.set(key, value);
+      return result;
+    });
   }
 
   if (enabled && hasLegacyAuthSecret) {
@@ -148,57 +261,20 @@ export async function createPersistentStore({ rootDir, filePath, enabled = true 
       return value ? structuredClone(value) : null;
     },
     saveTripWorkspace({ userId, formalTripId, workspace, expectedRevision, expectedEpoch, reset = false } = {}) {
-      const owner = String(userId || '').trim();
-      const tripId = String(formalTripId || '').trim();
-      if (!owner || !tripId) return Promise.resolve(null);
-      const source = workspace && typeof workspace === 'object' ? workspace : {};
-      const previous = tripWorkspaces.get(`${owner}:${tripId}`) || {};
-      const revision = Number(previous.workspaceRevision || 0);
-      if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision)
-          || expectedRevision !== revision || !expectedEpoch || expectedEpoch !== previous.chatEpoch)) {
-        const error = new Error('对话工作区已更新，请重新打开行程后再保存。');
-        error.status = 409; error.code = 'TRIP_WORKSPACE_CONFLICT';
-        error.workspace = Object.keys(previous).length ? structuredClone(previous) : null;
-        throw error;
-      }
-      const messages = reset ? [] : Array.isArray(source.chatMessages)
-        ? source.chatMessages.slice(-160).map((message) => ({
-          role: message?.role === 'user' ? 'user' : 'assistant',
-          content: String(message?.content || '').slice(0, 12000),
-          pending: false,
-          error: message?.error ? String(message.error).slice(0, 500) : undefined
-        })).filter((message) => message.content || message.error)
-        : (Array.isArray(previous.chatMessages) ? previous.chatMessages : []);
-      const value = {
-        ownerUserId: owner,
-        formalTripId: tripId,
-        workspaceRevision: revision + (reset || source.chatMessages !== undefined || source.chatMode !== undefined || !previous.chatEpoch ? 1 : 0),
-        chatMessages: messages,
-        chatMode: source.chatMode === undefined
-          ? (previous.chatMode === 'planner' ? 'planner' : 'chat')
-          : (source.chatMode === 'planner' ? 'planner' : 'chat'),
-        chatEpoch: source.chatEpoch === undefined ? (previous.chatEpoch || null) : (String(source.chatEpoch || '').slice(0,64) || null),
-        plannerConversationContext: source.plannerConversationContext === undefined
-          ? (previous.plannerConversationContext || null)
-          : (source.plannerConversationContext && typeof source.plannerConversationContext === 'object'
-            ? structuredClone(source.plannerConversationContext)
-            : null),
-        itineraryMemorySnapshot: source.itineraryMemorySnapshot === undefined
-          ? (previous.itineraryMemorySnapshot || null)
-          : (source.itineraryMemorySnapshot && typeof source.itineraryMemorySnapshot === 'object'
-            ? structuredClone(source.itineraryMemorySnapshot)
-            : null),
-        updatedAt: new Date().toISOString()
-      };
-      tripWorkspaces.set(`${owner}:${tripId}`, value);
-      return persist().then(() => structuredClone(value));
+      const input = { userId, formalTripId, workspace, expectedRevision, expectedEpoch, reset };
+      if (!String(userId || '').trim() || !String(formalTripId || '').trim()) return Promise.resolve(null);
+      return mutatePlannerStateAndPersist((_drafts, workspaces) => {
+        return createTripWorkspace(input, workspaces);
+      });
     },
     deleteTripWorkspace(userId, formalTripId) {
       const owner = String(userId || '').trim();
       const tripId = String(formalTripId || '').trim();
       if (!owner || !tripId) return Promise.resolve();
-      tripWorkspaces.delete(`${owner}:${tripId}`);
-      return persist();
+      const key = `${owner}:${tripId}`;
+      return mutatePlannerStateAndPersist((_drafts, workspaces) => {
+        workspaces.delete(key);
+      });
     },
     getPlannerDraft(sessionId) {
       const value = plannerDrafts.get(String(sessionId || ''));
@@ -209,52 +285,63 @@ export async function createPersistentStore({ rootDir, filePath, enabled = true 
       return draft;
     },
     savePlannerDraft(session) {
-      const id = String(session?.id || '').trim();
-      if (!id) return Promise.resolve();
-      plannerDrafts.set(id, structuredClone({
-        id,
-        input: session.input || '',
-        trip: session.trip || null,
-        shadow: null,
-        candidateSource: session.candidateSource || null,
-        candidateAppliedPreferences: session.candidateAppliedPreferences || [],
-        constraints: session.constraints || {},
-        preferencesApplied: session.preferencesApplied || [],
-        createdAt: session.createdAt || new Date().toISOString(),
-        updatedAt: session.updatedAt || new Date().toISOString(),
-        syncRevision: Number(session.syncRevision || 1),
-        replanHistory: session.replanHistory || [],
-        feedback: [],
-        userId: session.userId || null,
-        deviceId: session.deviceId || null,
-        formalTripId: session.formalTripId || null,
-        // Proposal contents are non-secret UI/session state. Java remains
-        // authoritative for proposal validity; this snapshot only restores
-        // the pending preview after a BFF restart.
-        chatProposal: session.chatProposal || null,
-        plannerConversationContext: session.plannerConversationContext || null,
-        chatEpoch: session.chatEpoch || null,
-        itineraryMemorySnapshot: session.itineraryMemorySnapshot || null,
-        javaSessionId: session.javaSessionId || null,
-        sessionAccessTokenEncrypted: protectSecret(session.sessionAccessToken || '', authSecret),
-        legacyMode: Boolean(session.legacyMode),
-        adjustmentCapability: session.adjustmentCapability || 'LEGACY',
-        plannerVersion: session.plannerVersion || null,
-        policyVersion: session.policyVersion || null,
-        routeDataStatus: session.routeDataStatus || null,
-        explanationSource: session.explanationSource || null,
-        degraded: Boolean(session.degraded),
-        degradationReasons: session.degradationReasons || []
-      }));
-      return persist();
+      const draft = createPlannerDraft(session);
+      if (!draft) return Promise.resolve();
+      return mutatePlannerStateAndPersist((draftState) => {
+        draftState.set(draft.id, draft);
+      });
+    },
+    savePlannerOpenState(session) {
+      const owner = String(session?.userId || '').trim();
+      const formalTripId = String(session?.formalTripId || '').trim();
+      if (!owner || !formalTripId || !String(session?.id || '').trim()) {
+        throw new Error('规划行程打开状态缺少有效会话或工作区归属。');
+      }
+      // Open is one local transaction: neither synchronous getter can observe
+      // one half while the combined JSON snapshot is waiting for rename. Read
+      // continuity fields at the queue head, after prior writes commit, so an
+      // earlier queued chat PUT cannot be overwritten by a stale Open snapshot.
+      return mutatePlannerStateAndPersist((drafts, workspaces) => {
+        const workspaceKey = `${owner}:${formalTripId}`;
+        const currentWorkspace = workspaces.get(workspaceKey);
+        if (currentWorkspace) {
+          session.plannerConversationContext = currentWorkspace.plannerConversationContext || null;
+          session.chatEpoch = currentWorkspace.chatEpoch || session.chatEpoch || null;
+        }
+        const workspaceWrite = {
+          userId: owner,
+          formalTripId,
+          workspace: {
+            plannerConversationContext: session.plannerConversationContext || null,
+            chatEpoch: session.chatEpoch || null,
+            itineraryMemorySnapshot: session.itineraryMemorySnapshot || null
+          }
+        };
+        const draft = createPlannerDraft(session);
+        if (!draft) {
+          throw new Error('规划行程打开状态缺少有效会话或工作区归属。');
+        }
+        if (String(draft.userId || '').trim() !== String(workspaceWrite.userId).trim()
+            || String(draft.formalTripId || '').trim() !== String(workspaceWrite.formalTripId).trim()
+            || String(workspaceWrite.userId).trim() !== owner
+            || String(workspaceWrite.formalTripId).trim() !== formalTripId) {
+          throw new Error('规划行程打开状态的会话与工作区归属不一致。');
+        }
+        drafts.set(draft.id, draft);
+        const workspace = createTripWorkspace(workspaceWrite, workspaces);
+        return { draft: structuredClone(draft), workspace };
+      });
     },
     deletePlannerDraft(sessionId) {
-      plannerDrafts.delete(String(sessionId || ''));
-      return persist();
+      const id = String(sessionId || '');
+      return mutatePlannerStateAndPersist((draftState) => {
+        draftState.delete(id);
+      });
     },
     clearPlannerDrafts() {
-      plannerDrafts.clear();
-      return persist();
+      return mutatePlannerStateAndPersist((draftState) => {
+        draftState.clear();
+      });
     },
     persist,
     async flush() { await writeQueue; }

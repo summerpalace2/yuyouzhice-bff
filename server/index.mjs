@@ -7,7 +7,7 @@ import { boundedPlanChatContext, claimPlannerRound, ownsPlannerRound } from './p
  */
 
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
@@ -374,8 +374,10 @@ async function pipeChatStream(stream, res, requestSignal) {
       if (clientAborted || res.destroyed || res.writableEnded) break;
       resetTimer();
       const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
-      probe = (probe + text).slice(-256);
-      if (/event:\s*done(?:\r?\n|$)/.test(probe)) doneSeen = true;
+      probe = (probe + text).slice(-2048);
+      // Wait for both event:done and its terminating blank line before closing the stream,
+      // otherwise split SSE chunks truncate the trailing data payload and drop the done event.
+      if (/event:\s*done\r?\n(?:[^\r\n]*\r?\n)+\r?\n/.test(probe)) doneSeen = true;
       if (!res.writableEnded && !res.destroyed) {
         const accepted = res.write(chunk);
         if (!accepted && !doneSeen) await waitForDrain();
@@ -691,12 +693,12 @@ function formalTripHistoryProjection(formalTrip) {
   };
 }
 
-function openFormalTripSession(formalTrip, { userId, deviceId } = {}) {
+function openFormalTripSession(formalTrip, { userId, deviceId, sessionId, register = true } = {}) {
   const saved = savedTripProjection(formalTrip);
   const trip = clone(saved.trip);
   const now = new Date().toISOString();
   const session = {
-    id: `session-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    id: sessionId || `session-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     input: String(trip.prompt || trip.input || ''),
     trip,
     shadow: null,
@@ -718,7 +720,7 @@ function openFormalTripSession(formalTrip, { userId, deviceId } = {}) {
     legacyMode: true,
     adjustmentCapability: 'LEGACY'
   };
-  sessions.set(session.id, session);
+  if (register) sessions.set(session.id, session);
   return session;
 }
 
@@ -816,11 +818,13 @@ function itineraryMemorySnapshot(session) {
   };
 }
 
-function hydrateFormalTripWorkspace(session) {
+function hydrateFormalTripWorkspace(session, currentWorkspace) {
   const userId = String(session?.userId || '').trim();
   const formalTripId = String(session?.formalTripId || '').trim();
   if (!userId || !formalTripId) return null;
-  const workspace = persistentStore.getTripWorkspace?.(userId, formalTripId);
+  const workspace = currentWorkspace === undefined
+    ? persistentStore.getTripWorkspace?.(userId, formalTripId)
+    : currentWorkspace;
   if (!workspace) {
     session.itineraryMemorySnapshot = session.itineraryMemorySnapshot || itineraryMemorySnapshot(session);
     return null;
@@ -831,17 +835,18 @@ function hydrateFormalTripWorkspace(session) {
   return workspace;
 }
 
-async function persistFormalTripWorkspace(session, patch = {}, { reset = false, expectedRevision, expectedEpoch } = {}) {
+function formalTripWorkspaceWrite(session, patch = {}, { reset = false, expectedRevision, expectedEpoch } = {}) {
   const userId = String(session?.userId || '').trim();
   const formalTripId = String(session?.formalTripId || '').trim();
   if (!userId || !formalTripId) return null;
   const current = persistentStore.getTripWorkspace?.(userId, formalTripId);
   if (!reset && current?.chatEpoch && session.chatEpoch && session.chatEpoch !== current.chatEpoch && expectedRevision === undefined) {
-    hydrateFormalTripWorkspace(session); return current;
+    hydrateFormalTripWorkspace(session);
+    return { userId, formalTripId, workspace: current, unchanged: true };
   }
   if (!reset) session.chatEpoch = current?.chatEpoch || session.chatEpoch || randomUUID();
   session.itineraryMemorySnapshot = itineraryMemorySnapshot(session);
-  return persistentStore.saveTripWorkspace?.({
+  return {
     userId,
     formalTripId,
     reset, expectedRevision, expectedEpoch,
@@ -851,7 +856,14 @@ async function persistFormalTripWorkspace(session, patch = {}, { reset = false, 
       itineraryMemorySnapshot: session.itineraryMemorySnapshot,
       ...patch
     }
-  });
+  };
+}
+
+async function persistFormalTripWorkspace(session, patch = {}, options = {}) {
+  const write = formalTripWorkspaceWrite(session, patch, options);
+  if (!write) return null;
+  if (write.unchanged) return write.workspace;
+  return persistentStore.saveTripWorkspace?.(write);
 }
 
 /**
@@ -873,7 +885,35 @@ async function restorePlannerSession(sessionId, req) {
   }
 
   const draft = persistentStore.getPlannerDraft?.(id);
-  if (!draft) return null;
+  if (!draft) {
+    const token = javaTokenFor(req);
+    if (!webSession?.user || !token || typeof javaCore.getPlannerSession !== 'function') return null;
+    try {
+      const restored = await javaCore.getPlannerSession(id, { token });
+      if (!restored?.trip) return null;
+      const session = {
+        id,
+        javaSessionId: id,
+        sessionAccessToken: String(restored.sessionAccessToken || ''),
+        userId: webSession.user.id,
+        deviceId: requestDeviceId(req),
+        input: String(restored.trip?.title || '智能体行程规划'),
+        trip: clone(restored.trip),
+        syncRevision: Number(restored.syncRevision || restored.currentVersion || restored.trip?.version || 1),
+        formalTripId: restored.formalTripId || restored.trip?.formalTripId || restored.trip?.savedTripId || null,
+        legacyMode: false,
+        adjustmentCapability: 'V1_PROPOSAL',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      hydrateFormalTripWorkspace(session);
+      sessions.set(id, session);
+      await persistentStore.savePlannerDraft?.(session);
+      return session;
+    } catch {
+      return null;
+    }
+  }
 
   const deviceId = requestDeviceId(req);
   if (draft.deviceId && draft.deviceId !== deviceId) {
@@ -1111,6 +1151,10 @@ async function api(req, res, url, requestSignal) {
   if (url.pathname === '/api/chat/stream' && req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: '对话请求需要通过 POST 提交。' });
+  }
+  if ((url.pathname === '/api/agent/stream' || url.pathname === '/api/agent/confirm') && req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: '智能体请求需要通过 POST 提交。' });
   }
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(req.method || '').toUpperCase())) {
     const security = assertMutationSecurity(req, sessionForRequest(req), {
@@ -1462,6 +1506,149 @@ async function api(req, res, url, requestSignal) {
     });
     await pipeChatStream(stream, res, requestSignal);
     return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/agent/stream') {
+    const input = (await body(req)) || {};
+    const message = String(input.message || '').trim();
+    if (!message) return json(res, 400, { ok: false, code: 'AGENT_INVALID_REQUEST', message: '对话内容不能为空。' });
+    if (message.length > 4000) return json(res, 413, { ok: false, code: 'AGENT_INVALID_REQUEST', message: '对话内容过长，请分段发送。' });
+    const mode = input.mode === 'deep' ? 'deep' : 'normal';
+    const requestedSessionId = String(input.sessionId || '').trim();
+    const sessionId = (requestedSessionId || `web-${randomUUID()}`).slice(0, 128);
+    const plannerSessionId = String(input.plannerSessionId || '').trim().slice(0, 128);
+    const activeCity = String(input.activeCity || '重庆').trim().slice(0, 64) || '重庆';
+    const activeDay = input.activeDay !== undefined && input.activeDay !== null && input.activeDay !== '' ? Number(input.activeDay) : null;
+    const activeStopId = String(input.activeStopId || '').trim().slice(0, 128);
+    const activeStopName = String(input.activeStopName || '').trim().slice(0, 128);
+    const user = await authUser(req);
+
+    let agentPlannerSession = null;
+    if (plannerSessionId) {
+      try {
+        agentPlannerSession = await restorePlannerSession(plannerSessionId, req);
+      } catch (error) {
+        console.warn('[BFF][agent-plan-context-unavailable]', JSON.stringify({ reason: error?.code || error?.name || 'UNKNOWN' }));
+      }
+    }
+
+    const resolvedJavaPlannerId = agentPlannerSession?.javaSessionId || (user ? plannerSessionId : '');
+    const resolvedAccessToken = agentPlannerSession?.sessionAccessToken || '';
+    const resolvedTripId = String(input.tripId || agentPlannerSession?.formalTripId || '').trim().slice(0, 128);
+    const rawRevision = input.baseRevision ?? agentPlannerSession?.syncRevision ?? agentPlannerSession?.trip?.version ?? null;
+    const resolvedRevision = rawRevision !== null && rawRevision !== '' && Number.isFinite(Number(rawRevision)) ? Number(rawRevision) : null;
+
+    let stream;
+    try {
+      stream = await javaCore.agentStream(
+        {
+          message,
+          sessionId: agentPlannerSession?.chatEpoch ? `epoch-${agentPlannerSession.chatEpoch}` : sessionId,
+          mode,
+          plannerSessionId: resolvedJavaPlannerId,
+          sessionAccessToken: resolvedAccessToken,
+          tripId: resolvedTripId,
+          baseRevision: resolvedRevision,
+          activeCity,
+          activeDay,
+          activeStopId,
+          activeStopName
+        },
+        javaTokenFor(req),
+        requestSignal
+      );
+    } catch (error) {
+      return javaErrorResponse(res, error, 'Java 智能体服务暂不可用。');
+    }
+    if (!stream?.body) return json(res, 502, { ok: false, code: 'JAVA_AGENT_STREAM_INVALID', message: 'Java Core Backend 未返回智能体事件流。' });
+    res.writeHead(200, {
+      'content-type': stream.headers?.get('content-type') || 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-store',
+      connection: 'keep-alive',
+      'x-agent-owner': user ? 'java-authenticated' : 'java-anonymous'
+    });
+    await pipeChatStream(stream, res, requestSignal);
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/agent/confirm') {
+    const input = (await body(req)) || {};
+    const confirmId = String(input.confirmId || '').trim();
+    if (!confirmId) return json(res, 400, { ok: false, code: 'AGENT_INVALID_REQUEST', message: '缺少确认单标识 confirmId。' });
+    const sessionId = String(input.sessionId || 'default').trim().slice(0, 128) || 'default';
+    const plannerSessionId = String(input.plannerSessionId || '').trim().slice(0, 128);
+    const user = await authUser(req);
+    let effectiveSessionId = sessionId;
+    if (plannerSessionId) {
+      try {
+        const cached = await restorePlannerSession(plannerSessionId, req);
+        if (cached?.chatEpoch) effectiveSessionId = `epoch-${cached.chatEpoch}`;
+      } catch {}
+    }
+    try {
+      const result = await javaCore.agentConfirm(
+        { confirmId, approved: Boolean(input.approved), sessionId: effectiveSessionId },
+        javaTokenFor(req),
+        requestSignal
+      );
+      if (result?.modified && plannerSessionId) {
+        try {
+          let cached = sessions.get(plannerSessionId);
+          if (!cached && user) {
+            cached = await restorePlannerSession(plannerSessionId, req);
+          }
+          if (!cached && user) {
+            const rawTrip = result?.data?.trip?.plan && typeof result.data.trip.plan === 'object'
+              ? result.data.trip.plan
+              : result?.data?.trip;
+            cached = {
+              id: plannerSessionId,
+              javaSessionId: plannerSessionId,
+              sessionAccessToken: '',
+              userId: user.id,
+              deviceId: requestDeviceId(req),
+              input: String(result?.data?.trip?.title || result?.data?.title || '智能体行程规划'),
+              trip: rawTrip && typeof rawTrip === 'object' ? clone(rawTrip) : {},
+              syncRevision: Number(result?.data?.currentVersion || rawTrip?.version || 1),
+              formalTripId: null,
+              legacyMode: false,
+              adjustmentCapability: 'V1_PROPOSAL',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+            sessions.set(plannerSessionId, cached);
+          }
+          if (cached) {
+            if (result?.data?.trip && (result?.data?.applied || result?.data?.saved)) {
+              const resolvedTrip = result.data.trip?.plan && typeof result.data.trip.plan === 'object'
+                ? result.data.trip.plan
+                : result.data.trip;
+              cached.trip = clone(resolvedTrip);
+              cached.syncRevision = Number(result.data.currentVersion || cached.trip?.version || cached.syncRevision || 1);
+            }
+            if (result?.data?.saved && result?.data?.tripId) {
+              cached.formalTripId = String(result.data.tripId);
+              if (cached.trip && typeof cached.trip === 'object') {
+                cached.trip.formalTripId = cached.formalTripId;
+                cached.trip.savedTripId = cached.formalTripId;
+              }
+            }
+            cached.updatedAt = new Date().toISOString();
+            await persistentStore.savePlannerDraft?.(cached);
+            if (result?.data?.saved && result?.data?.tripId) {
+              hydrateFormalTripWorkspace(cached);
+              const workspace = await persistFormalTripWorkspace(cached, { chatMode: 'agent' });
+              if (workspace) {
+                result.workspace = clone(workspace);
+              }
+            }
+          }
+        } catch (syncErr) {
+          console.warn('[BFF][agent-confirm-draft-sync]', JSON.stringify({ message: syncErr?.message || 'SYNC_FAILED' }));
+        }
+      }
+      return json(res, 200, result);
+    } catch (error) {
+      return javaErrorResponse(res, error, '智能体确认执行失败。');
+    }
   }
   if (req.method === 'POST' && url.pathname === '/api/chat/proposal') {
     const input = await body(req);
@@ -2409,46 +2596,205 @@ async function api(req, res, url, requestSignal) {
   // Opening a formal Java Trip creates only a process-local draft session so
   // subsequent edits remain Java candidates. The formal Trip is never copied
   // to Node persistent storage.
+  if (req.method === 'POST' && /^\/api\/trips\/[^/]+\/draft\/restore$/.test(url.pathname)) {
+    const user = await authUser(req);
+    if (!user) return json(res, 401, { ok: false, message: '请登录后恢复草稿。' });
+    const tripId = decodeURIComponent(url.pathname.split('/')[3]);
+    const input = await body(req);
+    const session = await restorePlannerSession(String(input.sessionId || ''), req);
+    if (!session || session.userId !== user.id || String(session.formalTripId || '') !== tripId
+        || !session.javaSessionId) {
+      return json(res, 404, { ok: false, message: '行程会话已失效，请重新打开正式行程。' });
+    }
+    const startingSyncRevision = Number(session.syncRevision || 1);
+    const startingTripVersion = Number(session.trip?.version || 1);
+    const startingTripSnapshot = JSON.stringify(session.trip || null);
+    try {
+      const restored = await javaCore.restorePlannerDraft(session.javaSessionId, {
+        trip: input.trip, expectedVersion: input.expectedVersion,
+        sessionAccessToken: session.sessionAccessToken || ''
+      }, javaTokenFor(req), requestSignal);
+      const currentSyncRevision = Number(session.syncRevision || 1);
+      const currentTripVersion = Number(session.trip?.version || 1);
+      if (currentSyncRevision > startingSyncRevision || currentTripVersion > startingTripVersion
+          || JSON.stringify(session.trip || null) !== startingTripSnapshot) {
+        return json(res, 409, { ok: false, code: 'PLANNER_REVISION_CONFLICT',
+          message: '规划版本已更新，请刷新后重试。' });
+      }
+      const restoredSyncRevision = restored.syncRevision;
+      const restoredTripVersion = restored.trip?.version;
+      if (typeof restoredSyncRevision !== 'number' || !Number.isSafeInteger(restoredSyncRevision) || restoredSyncRevision < 1
+          || typeof restoredTripVersion !== 'number' || !Number.isSafeInteger(restoredTripVersion) || restoredTripVersion < 1) {
+        return json(res, 502, { ok: false, code: 'PLANNER_RESTORE_CONTRACT_INVALID',
+          message: 'Java Core Backend 未返回有效的规划版本。' });
+      }
+      if (restoredSyncRevision < currentSyncRevision || restoredTripVersion < currentTripVersion) {
+        return json(res, 409, { ok: false, code: 'PLANNER_REVISION_CONFLICT',
+          message: '规划版本已更新，请刷新后重试。' });
+      }
+      if (restoredSyncRevision <= startingSyncRevision || restoredTripVersion <= startingTripVersion) {
+        return json(res, 502, { ok: false, code: 'PLANNER_RESTORE_CONTRACT_INVALID',
+          message: 'Java Core Backend 返回的规划版本没有推进。' });
+      }
+      session.trip = clone(restored.trip);
+      session.syncRevision = restoredSyncRevision;
+      session.updatedAt = new Date().toISOString();
+      // Java has already committed the revision. The previously saved BFF
+      // session still identifies it and rehydrates from Java after a restart.
+      try { await persistentStore.savePlannerDraft?.(session); }
+      catch (error) { void writeBffDiagnostic('planner-draft-persist-error', diagnosticError(error)); }
+      return json(res, 200, { ok: true, sessionId: session.id, trip: clone(session.trip),
+        message: '草稿已恢复，可继续编辑。' });
+    } catch (error) {
+      return javaErrorResponse(res, error, '恢复草稿失败。');
+    }
+  }
   if (req.method === 'POST' && /^\/api\/trips\/[^/]+\/open$/.test(url.pathname)) {
     const user = await authUser(req);
     if (!user) return json(res, 401, { ok: false, message: '请登录后打开已保存行程。' });
     const tripId = decodeURIComponent(url.pathname.split('/')[3]);
+    const headerOperationKey = String(req.headers['x-planner-open-idempotency-key'] || '').trim();
+    if (headerOperationKey && !/^[A-Za-z0-9._:-]{1,128}$/.test(headerOperationKey)) {
+      return json(res, 400, { ok: false, code: 'INVALID_OPEN_OPERATION_KEY', message: '打开操作标识无效，请重新尝试。' });
+    }
+    const openOperationKey = headerOperationKey || randomUUID();
+    const bffSessionId = `session-open-${createHash('sha256')
+      .update(`${user.id}\n${tripId}\n${openOperationKey}`)
+      .digest('hex')}`;
     try {
-      const restored = await javaCore.openPlannerTrip(tripId, javaTokenFor(req), requestSignal);
-      const formal = await javaCore.getTrip(javaTokenFor(req), tripId);
-      const session = openFormalTripSession(formal, {
+      const restored = await javaCore.openPlannerTrip(tripId, javaTokenFor(req), requestSignal, openOperationKey);
+      const sourceTrip = restored?.trip;
+      const formalTripVersion = restored?.formalTripVersion;
+      const syncRevision = restored?.syncRevision;
+      const validOpenSnapshot = restored?.ok === true
+        && typeof restored.sessionId === 'string' && Boolean(restored.sessionId.trim())
+        && (!Object.prototype.hasOwnProperty.call(restored, 'sessionAccessToken')
+          || typeof restored.sessionAccessToken === 'string')
+        && restored.formalTripId === tripId
+        && Number.isSafeInteger(formalTripVersion) && formalTripVersion > 0
+        && Number.isSafeInteger(syncRevision) && syncRevision > 0
+        && sourceTrip && typeof sourceTrip === 'object' && !Array.isArray(sourceTrip)
+        && Number.isSafeInteger(sourceTrip.version) && sourceTrip.version > 0
+        && sourceTrip.formalTripId === tripId
+        && sourceTrip.sourceTripId === tripId
+        && Number.isSafeInteger(sourceTrip.sourceTripVersion)
+        && sourceTrip.sourceTripVersion === formalTripVersion;
+      if (!validOpenSnapshot) {
+        const candidateSessionId = typeof restored?.sessionId === 'string' ? restored.sessionId.trim() : '';
+        if (candidateSessionId && restored?.formalTripId === tripId) {
+          try {
+            const compensation = await javaCore.discardOpenedPlannerSession(
+              tripId, candidateSessionId, javaTokenFor(req));
+            if (compensation?.ok !== true || compensation?.discarded !== true) {
+              throw new Error('Java Core Backend 未确认清理未完成的 Open session。');
+            }
+            await writeBffDiagnostic('planner-open-java-session-compensated', {
+              formalTripId: tripId, javaSessionId: candidateSessionId, reason: 'invalid-open-contract'
+            });
+          } catch (error) {
+            await writeBffDiagnostic('planner-open-java-session-compensation-failed', {
+              formalTripId: tripId, javaSessionId: candidateSessionId, reason: 'invalid-open-contract',
+              error: diagnosticError(error)
+            });
+          }
+        }
+        return json(res, 502, {
+          ok: false, code: 'PLANNER_OPEN_CONTRACT_INVALID', message: 'Java Core Backend 未返回有效规划会话。'
+        });
+      }
+      const session = openFormalTripSession({
+        id: tripId,
+        title: String(sourceTrip.title || '未命名行程'),
+        currentVersion: formalTripVersion,
+        plan: sourceTrip
+      }, {
         userId: user.id,
-        deviceId: requestDeviceId(req)
+        deviceId: requestDeviceId(req),
+        sessionId: bffSessionId,
+        register: false
       });
-      session.javaSessionId = String(restored.sessionId || '');
-      session.sessionAccessToken = String(restored.sessionAccessToken || '');
-      session.trip = clone(restored.trip || formal.plan || session.trip);
+      session.javaSessionId = restored.sessionId.trim();
+      session.sessionAccessToken = typeof restored.sessionAccessToken === 'string'
+        ? restored.sessionAccessToken.trim() : '';
+      session.trip = clone(sourceTrip);
       session.trip.formalTripId = tripId;
       session.trip.savedTripId = tripId;
-      session.syncRevision = Number(restored.syncRevision || 1);
+      session.syncRevision = syncRevision;
       session.legacyMode = false;
       session.adjustmentCapability = 'V1_PROPOSAL';
-      hydrateFormalTripWorkspace(session);
-      const workspace = await persistFormalTripWorkspace(session);
-      await persistentStore.savePlannerDraft?.(session);
-      return json(res, 200, {
-        ok: true,
-        sessionId: session.id,
-        javaSessionId: session.javaSessionId,
-        sessionAccessToken: session.sessionAccessToken,
-        savedTripId: tripId,
-        legacyMode: false,
-        adjustmentCapability: 'V1_PROPOSAL',
-        formalTripVersion: restored.formalTripVersion,
-        trip: clone(session.trip),
-        workspace: workspace ? clone(workspace) : {
-          chatMessages: [],
-          chatMode: 'chat',
-          plannerConversationContext: null,
-          itineraryMemorySnapshot: clone(session.itineraryMemorySnapshot || itineraryMemorySnapshot(session))
-        },
-        message: 'Java Core Backend 正式行程已恢复为可编辑规划会话。'
-      });
+      session.chatEpoch = session.chatEpoch || randomUUID();
+      session.itineraryMemorySnapshot = itineraryMemorySnapshot(session);
+      try {
+        const openState = await persistentStore.savePlannerOpenState(session);
+        if (!openState?.draft || !openState?.workspace) {
+          throw new Error('正式行程打开状态未能原子持久化。');
+        }
+        hydrateFormalTripWorkspace(session, openState.workspace);
+        const workspace = openState?.workspace || null;
+        try {
+          const acknowledged = await javaCore.acknowledgeOpenedPlannerSession(
+            tripId, session.javaSessionId, javaTokenFor(req));
+          if (acknowledged?.ok !== true || acknowledged?.acknowledged !== true) {
+            throw new Error('Java Core Backend 未确认正式行程 Open session。');
+          }
+        } catch (ackError) {
+          await writeBffDiagnostic('planner-open-java-session-ack-pending', {
+            formalTripId: tripId, javaSessionId: session.javaSessionId,
+            operationKeyHash: createHash('sha256').update(openOperationKey).digest('hex'),
+            error: diagnosticError(ackError)
+          });
+          try { await persistentStore.deletePlannerDraft?.(session.id); }
+          catch (draftCleanupError) {
+            await writeBffDiagnostic('planner-open-unacknowledged-draft-cleanup-failed', diagnosticError(draftCleanupError));
+          }
+          return json(res, 503, {
+            ok: false, code: 'PLANNER_OPEN_ACK_PENDING', retrySameOperation: true,
+            message: '行程打开正在恢复，请重试；系统会继续使用本次打开操作。'
+          });
+        }
+        sessions.set(session.id, session);
+        return json(res, 200, {
+          ok: true,
+          sessionId: session.id,
+          javaSessionId: session.javaSessionId,
+          sessionAccessToken: session.sessionAccessToken,
+          savedTripId: tripId,
+          legacyMode: false,
+          adjustmentCapability: 'V1_PROPOSAL',
+          formalTripVersion: restored.formalTripVersion,
+          trip: clone(session.trip),
+          workspace: workspace ? clone(workspace) : {
+            chatMessages: [],
+            chatMode: 'chat',
+            plannerConversationContext: null,
+            itineraryMemorySnapshot: clone(session.itineraryMemorySnapshot || itineraryMemorySnapshot(session))
+          },
+          message: 'Java Core Backend 正式行程已恢复为可编辑规划会话。'
+        });
+      } catch (error) {
+        await writeBffDiagnostic('planner-open-local-persist-error', diagnosticError(error));
+        try {
+          await persistentStore.deletePlannerDraft?.(session.id);
+        } catch (cleanupError) {
+          await writeBffDiagnostic('planner-open-local-draft-cleanup-failed', diagnosticError(cleanupError));
+        }
+        try {
+          const compensation = await javaCore.discardOpenedPlannerSession(
+            tripId, session.javaSessionId, javaTokenFor(req));
+          if (compensation?.ok !== true || compensation?.discarded !== true) {
+            throw new Error('Java Core Backend 未确认清理未完成的 Open session。');
+          }
+          await writeBffDiagnostic('planner-open-java-session-compensated', {
+            formalTripId: tripId, javaSessionId: session.javaSessionId
+          });
+        } catch (compensationError) {
+          await writeBffDiagnostic('planner-open-java-session-compensation-failed', {
+            formalTripId: tripId, javaSessionId: session.javaSessionId,
+            error: diagnosticError(compensationError)
+          });
+        }
+        throw error;
+      }
     } catch (error) {
       return javaErrorResponse(res, error, '无法打开 Java Core Backend 正式行程。');
     }
@@ -2476,7 +2822,7 @@ async function api(req, res, url, requestSignal) {
     try {
       const workspace = await persistFormalTripWorkspace(session, {
         chatMessages: Array.isArray(input.chatMessages) ? input.chatMessages : [],
-        chatMode: input.chatMode === 'planner' ? 'planner' : 'chat'
+        chatMode: input.chatMode === 'agent' ? 'agent' : (input.chatMode === 'planner' ? 'planner' : 'chat')
       }, { expectedRevision: input.expectedRevision, expectedEpoch: input.chatEpoch });
       return json(res, 200, { ok: true, workspace: clone(workspace) });
     } catch (error) {

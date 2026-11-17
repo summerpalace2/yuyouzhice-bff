@@ -38,7 +38,7 @@
     "test:quality": "node scripts/quality-metrics-check.mjs",
     "test:feedback-analytics": "node scripts/feedback-analytics-check.mjs",
     "test:admin": "node scripts/admin-console-check.mjs",
-    "test:architecture": "node scripts/frontend-architecture-check.mjs",
+    "test:architecture": "node quality/frontend-architecture-check.mjs",
     "test:render-performance": "node scripts/render-performance-check.mjs",
     "test:http-cache": "node scripts/http-cache-check.mjs",
     "test:cross-device": "node scripts/cross-device-history-check.mjs",

@@ -127,7 +127,9 @@ function unwrapEnvelope(response, body) {
           : status >= 500 ? 'JAVA_BACKEND_UNAVAILABLE' : 'JAVA_REQUEST_REJECTED';
     throw new JavaCoreError(status, mapped, String(envelope.message || 'Java Core Backend 请求失败。'), envelope.data || null);
   }
-  return envelope.data === undefined ? envelope : envelope.data;
+  const isResultEnvelope = Object.prototype.hasOwnProperty.call(envelope, 'success')
+    || Object.prototype.hasOwnProperty.call(envelope, 'code');
+  return (isResultEnvelope && envelope.data !== undefined) ? envelope.data : envelope;
 }
 
 function canRetryJavaRequest(path, method) {
@@ -237,6 +239,7 @@ async function requestJavaStream(path, options = {}) {
         headers: {
           accept: 'text/event-stream',
           ...(options.body ? { 'content-type': 'application/json' } : {}),
+          ...(options.headers || {}),
           ...(token ? { authorization: `Bearer ${token}` } : {})
         },
         signal: controller.signal,
@@ -471,6 +474,7 @@ function createTestStub() {
     };
   }
   const plannerSessions = new Map();
+  const plannerOpenOperations = new Map();
   const plannerProposals = new Map();
   const testProposalTtlMs = Math.max(1, Number(process.env.YUYOUZHICE_TEST_PROPOSAL_TTL_MS || 900000));
 
@@ -1067,8 +1071,12 @@ function createTestStub() {
       session.trip.formalTripId = formal.id;
       return { ok: true, tripId: formal.id, trip: formal, currentVersion: formal.currentVersion };
     },
-    async openPlannerTrip(tripId, token) {
-      const { trip } = ownedTrip(token, tripId);
+    async openPlannerTrip(tripId, token, _signal, operationKey) {
+      const { user, trip } = ownedTrip(token, tripId);
+      const operationId = operationKey ? `${user.userId}:${trip.id}:${operationKey}` : '';
+      const existingId = operationId ? plannerOpenOperations.get(operationId) : '';
+      const existing = existingId ? plannerSessions.get(existingId) : null;
+      if (existing) return clone(existing.openResponse);
       const sessionId = `session-stub-${sequence++}`;
       const sessionAccessToken = `plan-token-${sequence++}`;
       const restoredTrip = clone(trip.plan || {});
@@ -1076,8 +1084,8 @@ function createTestStub() {
       restoredTrip.sourceTripId = trip.id;
       restoredTrip.sourceTripVersion = trip.currentVersion;
       restoredTrip.plannerSessionRestoreSource = 'RESTORED_FROM_TRIP';
-      plannerSessions.set(sessionId, { sessionId, trip: restoredTrip, currentVersion: 1, sessionAccessToken });
-      return {
+      restoredTrip.version = 1;
+      const openResponse = {
         ok: true,
         sessionId,
         sessionAccessToken,
@@ -1089,6 +1097,35 @@ function createTestStub() {
         adjustmentCapability: 'V1_PROPOSAL',
         legacyMode: false
       };
+      plannerSessions.set(sessionId, { sessionId, trip: restoredTrip, currentVersion: 1,
+        sessionAccessToken, status: 'OPEN_PENDING', openResponse });
+      if (operationId) plannerOpenOperations.set(operationId, sessionId);
+      return clone(openResponse);
+    },
+    async acknowledgeOpenedPlannerSession(tripId, sessionId, token) {
+      ownedTrip(token, tripId);
+      const session = plannerSessions.get(String(sessionId || ''));
+      if (!session) throw new JavaCoreError(404, 'PLANNER_SESSION_NOT_FOUND', '规划会话不存在。');
+      if (session.trip.formalTripId !== tripId) {
+        throw new JavaCoreError(409, 'OPEN_SESSION_MISMATCH', '规划会话与正式行程不匹配。');
+      }
+      session.status = 'ACTIVE';
+      return { ok: true, acknowledged: true };
+    },
+    async discardOpenedPlannerSession(tripId, sessionId, token) {
+      const { user } = ownedTrip(token, tripId);
+      const session = plannerSessions.get(String(sessionId || ''));
+      if (!session) return { ok: true, discarded: true, alreadyAbsent: true };
+      if (session.status !== 'OPEN_PENDING' || session.trip.formalTripId !== tripId) {
+        throw new JavaCoreError(409, 'OPEN_SESSION_CHANGED', '规划会话已变化。');
+      }
+      plannerSessions.delete(session.sessionId);
+      for (const [operationId, value] of plannerOpenOperations) {
+        if (value === session.sessionId && operationId.startsWith(`${user.userId}:${tripId}:`)) {
+          plannerOpenOperations.delete(operationId);
+        }
+      }
+      return { ok: true, discarded: true, alreadyAbsent: false };
     }
   };
 
@@ -1122,6 +1159,19 @@ function createHttpClient() {
         if (page.length < limit) return memories;
       }
     },
+    async restorePlannerDraft(sessionId, { trip, expectedVersion } = {}, token) {
+      const session = plannerSessions.get(String(sessionId || ''));
+      if (!session) throw new JavaCoreError(404, 'PLANNER_SESSION_NOT_FOUND', '规划会话不存在。');
+      if (Number(expectedVersion) !== session.currentVersion) throw new JavaCoreError(409, 'PLANNER_VERSION_CONFLICT', '规划版本冲突。');
+      const formalId = String(session.trip.sourceTripId || '');
+      const { trip: formal } = ownedTrip(token, formalId);
+      if (Number(trip?.sourceTripVersion) !== formal.currentVersion) throw new JavaCoreError(409, 'TRIP_VERSION_CONFLICT', '正式行程已更新。');
+      if (!Array.isArray(trip?.days)) throw new JavaCoreError(400, 'INVALID_TRIP', '备份缺少行程日期。');
+      session.currentVersion += 1;
+      session.trip = { ...clone(trip), sourceTripId: formalId, formalTripId: formalId,
+        sourceTripVersion: formal.currentVersion, version: session.currentVersion };
+      return { ok: true, sessionId, trip: clone(session.trip), currentVersion: session.currentVersion };
+    },
     captureTravelMemoryObservation: (input = {}, token, signal) => requestJava('/ai/memories/observations', { method: 'POST', token, signal, body: input }),
     listTravelMemoryCandidates: (token, signal) => requestJava('/ai/memories/candidates', { token, signal }),
     confirmTravelMemoryCandidate: (id, token, signal) => requestJava(`/ai/memories/candidates/${encodeURIComponent(id)}/confirm`, { method: 'POST', token, signal }),
@@ -1147,6 +1197,46 @@ function createHttpClient() {
       });
       return requestJavaStream('/ai/chat/stream', { token, signal, method: 'POST', body: Object.fromEntries(params) });
     },
+    agentStream: ({
+      message = '',
+      sessionId = 'default',
+      mode = 'normal',
+      plannerSessionId = '',
+      sessionAccessToken = '',
+      tripId = '',
+      baseRevision = null,
+      activeCity = '重庆',
+      activeDay = null,
+      activeStopId = '',
+      activeStopName = ''
+    } = {}, token, signal) => requestJavaStream('/ai/agent/v1/stream', {
+      token,
+      signal,
+      method: 'POST',
+      headers: sessionAccessToken ? { 'x-plan-session-token': sessionAccessToken } : {},
+      body: {
+        message: String(message),
+        sessionId: String(sessionId || 'default'),
+        mode: mode === 'deep' ? 'deep' : 'normal',
+        plannerSessionId: String(plannerSessionId || ''),
+        tripId: String(tripId || ''),
+        baseRevision: Number.isFinite(Number(baseRevision)) && baseRevision !== null && baseRevision !== '' ? Number(baseRevision) : null,
+        activeCity: String(activeCity || '重庆'),
+        activeDay: Number.isFinite(Number(activeDay)) && activeDay !== null && activeDay !== '' ? Number(activeDay) : null,
+        activeStopId: String(activeStopId || ''),
+        activeStopName: String(activeStopName || '')
+      }
+    }),
+    agentConfirm: ({ confirmId = '', approved = false, sessionId = 'default' } = {}, token, signal) => requestJava('/ai/agent/v1/confirm', {
+      method: 'POST',
+      token,
+      signal,
+      body: {
+        confirmId: String(confirmId || ''),
+        approved: Boolean(approved),
+        sessionId: String(sessionId || 'default')
+      }
+    }),
     ragRetrieve: ({ query, city = '重庆', constraints = {}, deep = false, signal } = {}, token) => requestJava('/ai/rag/retrieve', { method: 'POST', token, signal, body: { query, city, constraints, deep } }),
     ragStats: (token) => requestJava('/ai/rag/stats', { token }),
     analyticsDashboard: (period = 'today', token) => requestJava(`/ai/analytics/dashboard?period=${encodeURIComponent(period)}`, { token }),
@@ -1180,11 +1270,22 @@ function createHttpClient() {
         headers: sessionAccessToken ? { 'x-plan-session-token': sessionAccessToken } : {}
       });
     },
-    openPlannerTrip: (tripId, token, signal) => requestJava(`/ai/planner/v1/trips/${encodeURIComponent(tripId)}/open`, {
+    openPlannerTrip: (tripId, token, signal, operationKey) => requestJava(`/ai/planner/v1/trips/${encodeURIComponent(tripId)}/open`, {
       method: 'POST',
       token,
-      signal
+      signal,
+      headers: operationKey ? { 'Idempotency-Key': operationKey } : {}
     }),
+    acknowledgeOpenedPlannerSession: (tripId, sessionId, token) => requestJava(
+      `/ai/planner/v1/trips/${encodeURIComponent(tripId)}/open-sessions/${encodeURIComponent(sessionId)}/ack`, {
+        method: 'POST',
+        token
+      }),
+    discardOpenedPlannerSession: (tripId, sessionId, token) => requestJava(
+      `/ai/planner/v1/trips/${encodeURIComponent(tripId)}/open-sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+        token
+      }),
     replanPlannerSession: (sessionId, request = {}, token, signal) => requestJava(`/ai/planner/v1/sessions/${encodeURIComponent(sessionId)}/replan`, {
       method: 'POST',
       token,
@@ -1245,6 +1346,12 @@ function createHttpClient() {
       signal,
       headers: sessionAccessToken ? { 'x-plan-session-token': sessionAccessToken } : {}
     }),
+    restorePlannerDraft: (sessionId, { trip, expectedVersion, sessionAccessToken } = {}, token, signal) =>
+      requestJava(`/ai/planner/v1/sessions/${encodeURIComponent(sessionId)}/restore-draft`, {
+        method: 'POST', token, signal,
+        headers: sessionAccessToken ? { 'x-plan-session-token': sessionAccessToken } : {},
+        body: { trip, expectedVersion }
+      }),
     shadowPlan: ({ prompt = '', constraints = {}, usePreferences = false, signal } = {}, token) => requestJava('/ai/planner/v1/shadow', {
       method: 'POST', token, signal, body: { prompt, constraints, usePreferences }
     }),
