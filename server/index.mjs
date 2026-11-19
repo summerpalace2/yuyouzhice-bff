@@ -1645,6 +1645,9 @@ async function api(req, res, url, requestSignal) {
           console.warn('[BFF][agent-confirm-draft-sync]', JSON.stringify({ message: syncErr?.message || 'SYNC_FAILED' }));
         }
       }
+      if (result?.ok && plannerSessionId && !result.workspaceSessionId) {
+        result.workspaceSessionId = plannerSessionId;
+      }
       return json(res, 200, result);
     } catch (error) {
       return javaErrorResponse(res, error, '智能体确认执行失败。');
